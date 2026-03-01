@@ -1,0 +1,56 @@
+{
+  "manifest_version": 3,
+  "name": "NutriLens",
+  "version": "0.1.0",
+  "description": "AI-powered nutritional claim verification and product comparison for e-commerce.",
+
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+
+  "host_permissions": [
+    "https://www.amazon.in/*",
+    "https://www.bigbasket.com/*",
+    "https://www.flipkart.com/*"
+  ],
+
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["https://www.amazon.in/*/dp/*", "https://www.amazon.in/dp/*"],
+      "js": ["content_scripts/amazon.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.bigbasket.com/pd/*"],
+      "js": ["content_scripts/bigbasket.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.flipkart.com/*"],
+      "js": ["content_scripts/flipkart.js"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "action": {
+    "default_popup": "popup/index.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  }
+}
