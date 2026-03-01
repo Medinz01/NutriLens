@@ -1,0 +1,78 @@
+# ==============================
+# Node / React (Extension)
+# ==============================
+node_modules/
+dist/
+build/
+.vite/
+.cache/
+*.log
+
+# Local env files
+.env
+.env.local
+.env.*.local
+
+# ==============================
+# Python / FastAPI
+# ==============================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+venv/
+.env/
+.venv/
+
+# Python packaging
+*.egg-info/
+dist/
+build/
+
+# ==============================
+# ML Models / Large Files
+# ==============================
+*.pt
+*.pth
+*.bin
+*.h5
+*.ckpt
+*.onnx
+*.joblib
+
+ml/data/open_food_facts/*
+ml/data/indian_products/*
+
+# Allow annotated dataset if small
+!ml/data/annotated_claims.json
+
+# ==============================
+# Jupyter
+# ==============================
+.ipynb_checkpoints/
+
+# ==============================
+# OS / Windows
+# ==============================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ==============================
+# VS Code / IDE
+# ==============================
+.vscode/
+.idea/
+
+# ==============================
+# Logs
+# ==============================
+*.log
+
+# ==============================
+# Chrome Extension build output
+# ==============================
+extension/dist/
