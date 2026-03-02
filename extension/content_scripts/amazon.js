@@ -29,12 +29,16 @@
   }
 
   /**
-   * Parse a price string like "₹2,499", "2499.00", "Rs. 1,299" → float
+   * Parse a price string like "₹2,849.00", "Rs. 1,299", "2499" → float
+   * Indian format: commas are thousand separators, period is decimal.
    */
   function parsePrice(raw) {
     if (!raw) return null;
-    const cleaned = raw.replace(/[₹Rs.,\s]/g, "").trim();
-    const val = parseFloat(cleaned);
+    // Step 1: remove currency symbols and whitespace only (NOT the decimal point)
+    const withoutSymbols = raw.replace(/[₹R s]/g, "").replace(/Rs/g, "");
+    // Step 2: remove thousand-separator commas
+    const withoutCommas = withoutSymbols.replace(/,/g, "");
+    const val = parseFloat(withoutCommas);
     return isNaN(val) ? null : val;
   }
 
@@ -113,14 +117,46 @@
   }
 
   function extractPrice() {
-    const raw = queryText([
-      ".a-price .a-offscreen",
+    // Strategy 1: Build from visible whole + fraction elements — most reliable
+    // Avoids the offscreen span which Amazon sometimes populates with paise values
+    const wholeEl    = document.querySelector(
+      "#corePriceDisplay_desktop_feature_div .a-price-whole, " +
+      "#corePrice_feature_div .a-price-whole, " +
+      "#apex_offerDisplay_desktop .a-price-whole, " +
+      ".a-price-whole"
+    );
+    const fractionEl = document.querySelector(
+      "#corePriceDisplay_desktop_feature_div .a-price-fraction, " +
+      "#corePrice_feature_div .a-price-fraction, " +
+      ".a-price-fraction"
+    );
+
+    if (wholeEl) {
+      const wholeVal    = wholeEl.textContent.replace(/[^0-9]/g, "");
+      const fractionVal = fractionEl
+        ? fractionEl.textContent.replace(/[^0-9]/g, "").substring(0, 2).padEnd(2, "0")
+        : "00";
+      const combined = parseFloat(`${wholeVal}.${fractionVal}`);
+      if (!isNaN(combined) && combined > 0 && combined < 500000) return combined;
+    }
+
+    // Strategy 2: offscreen span (fallback)
+    const offscreenSelectors = [
+      "#corePriceDisplay_desktop_feature_div .a-offscreen",
+      "#corePrice_feature_div .a-offscreen",
       "#priceblock_ourprice",
       "#priceblock_dealprice",
-      ".a-price-whole",
-      "#corePrice_feature_div .a-offscreen"
-    ]);
-    return parsePrice(raw);
+      "#priceblock_saleprice",
+    ];
+    for (const sel of offscreenSelectors) {
+      const el = document.querySelector(sel);
+      if (el) {
+        const price = parsePrice(el.textContent);
+        if (price && price > 0 && price < 500000) return price;
+      }
+    }
+
+    return null;
   }
 
   // ─── Quantity / Pack Size ───────────────────────────────────────────────────

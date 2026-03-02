@@ -2,22 +2,25 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { resolve } from "path";
 
-// Build config for Chrome Extension popup
-// Run: vite build --config vite.config.js
-// Output goes to extension/popup/dist/
-
 export default defineConfig({
   plugins: [react()],
+  base: "./",   // Critical for Chrome extensions — no server, all paths must be relative
   build: {
-    outDir: "popup/dist",
+    outDir: "dist",
+    emptyOutDir: true,
     rollupOptions: {
       input: {
-        popup: resolve(__dirname, "popup/index.html"),
+        popup:      resolve(__dirname, "popup/index.html"),
+        background: resolve(__dirname, "background.js"),
+      },
+      output: {
+        // Keep background.js name stable — manifest references it directly
+        entryFileNames: "[name].js",
+        chunkFileNames: "chunks/[name]-[hash].js",
+        assetFileNames: "assets/[name]-[hash][extname]",
       },
     },
-    // Extensions can't use dynamic imports — inline everything
     cssCodeSplit: false,
-    minify: true,
+    minify: false, // Readable during dev — flip to true for production
   },
-  root: ".",
 });
