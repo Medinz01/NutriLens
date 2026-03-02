@@ -133,6 +133,12 @@ async function updateProductInSet(platformId, enrichedData) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const { type } = message;
 
+  // ── Popup → background: get product detected on current tab
+  if (type === "GET_PAGE_PRODUCT") {
+    getCurrentTabProduct().then(sendResponse);
+    return true;
+  }
+
   // ── Content script → background: new product detected on page
   if (type === "PRODUCT_EXTRACTED") {
     handleProductExtracted(message.payload).then(sendResponse);
@@ -170,6 +176,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 });
+
+async function getCurrentTabProduct() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.url) return { product: null };
+
+  // Match pending product by URL — extract platform_id from URL
+  for (const [platformId, product] of pendingProducts.entries()) {
+    if (product.url && tab.url.includes(platformId)) {
+      return { product };
+    }
+  }
+
+  // Fallback: match by URL directly
+  for (const [, product] of pendingProducts.entries()) {
+    if (product.url === tab.url) {
+      return { product };
+    }
+  }
+
+  return { product: null };
+}
+
+async function getCurrentTabPlatformId() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.url) return null;
+  const match = tab.url.match(/\/dp\/([A-Z0-9]{10})/);
+  return match ? match[1] : null;
+}
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
 

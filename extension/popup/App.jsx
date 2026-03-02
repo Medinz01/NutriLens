@@ -46,17 +46,11 @@ export default function App() {
   }
 
   async function checkCurrentTab() {
-    // Ask background if there's a product on the active tab
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id) return;
-
-    // Get pending product for this tab's platform_id
-    chrome.tabs.sendMessage(tab.id, { type: "GET_PAGE_PRODUCT" }, (response) => {
-      if (chrome.runtime.lastError) return; // Content script not injected on this page
-      if (response?.product) {
-        setPageProduct(response.product);
-      }
-    });
+    // Ask background for any product pending on the current tab
+    const response = await sendMessage({ type: "GET_PAGE_PRODUCT" });
+    if (response?.product) {
+      setPageProduct(response.product);
+    }
   }
 
   function listenForMessages() {
@@ -109,7 +103,8 @@ export default function App() {
       setTimeout(() => setAddStatus(null), 2000);
     } else {
       setAddStatus("error");
-      setTimeout(() => setAddStatus(null), 2000);
+      console.error("[NutriLens] Add failed:", response);
+      setTimeout(() => setAddStatus(null), 3000);
     }
   }
 

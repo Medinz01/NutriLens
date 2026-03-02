@@ -13,7 +13,8 @@
   "host_permissions": [
     "https://www.amazon.in/*",
     "https://www.bigbasket.com/*",
-    "https://www.flipkart.com/*"
+    "https://www.flipkart.com/*",
+    "http://localhost:8000/*"
   ],
 
   "background": {
