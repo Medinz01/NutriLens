@@ -2,16 +2,8 @@
 # Node / React (Extension)
 # ==============================
 node_modules/
-dist/
-build/
 .vite/
 .cache/
-*.log
-
-# Local env files
-.env
-.env.local
-.env.*.local
 
 # ==============================
 # Python / FastAPI
@@ -21,16 +13,31 @@ __pycache__/
 *.pyo
 *.pyd
 *.so
+*.egg-info/
 
 # Virtual environments
 venv/
-.env/
 .venv/
+env/
 
-# Python packaging
-*.egg-info/
+# ==============================
+# Build outputs
+# ==============================
 dist/
 build/
+
+# ==============================
+# Environment & secrets
+# ==============================
+.env
+.env.local
+.env.*.local
+backend/.env
+
+# ==============================
+# Docker
+# ==============================
+postgres_data/          # if volume ever gets mapped locally
 
 # ==============================
 # ML Models / Large Files
@@ -42,37 +49,47 @@ build/
 *.ckpt
 *.onnx
 *.joblib
+*.pkl
 
 ml/data/open_food_facts/*
 ml/data/indian_products/*
-
-# Allow annotated dataset if small
 !ml/data/annotated_claims.json
 
 # ==============================
 # Jupyter
 # ==============================
 .ipynb_checkpoints/
+*.ipynb_checkpoints
 
 # ==============================
-# OS / Windows
+# OS
 # ==============================
 .DS_Store
 Thumbs.db
 desktop.ini
 
 # ==============================
-# VS Code / IDE
+# IDE
 # ==============================
 .vscode/
 .idea/
+*.swp
+*.swo
 
 # ==============================
 # Logs
 # ==============================
 *.log
+logs/
 
 # ==============================
-# Chrome Extension build output
+# Chrome Extension
 # ==============================
 extension/dist/
+extension/popup/dist/
+
+# ==============================
+# Alembic (migrations auto-generated)
+# ==============================
+# Keep versions/ tracked — only ignore local alembic.ini overrides
+alembic.ini
