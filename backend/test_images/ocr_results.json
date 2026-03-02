@@ -1,0 +1,91 @@
+[
+  {
+    "image": "t1.jpg",
+    "classification": "nutrition",
+    "ocr_text_length": 866,
+    "nutrition": {
+      "protein_g": 359.0,
+      "sugar_g": 2.0
+    },
+    "serving_size": 2.0,
+    "ingredients": null,
+    "fssai": null,
+    "raw_text_preview": "i\n|\n1\n| AD Whey Protein Powder Nate Size: 1 Scoop (359) |\netl Blond (2%) ey Pacts We Concentrlel, Serving Servings Por asp)\ncogs, cis cout & tea 52\n& Sucralosc ‘position] - unique pat 1S. & clinically studied” Igy % 476\nA = \"el\n‘Added Si Sugars i 2 ih\nz i; Premium Grade Imported Whey Protein\n& be Fat\nAids gh 108 ian\nEe ( Tein ot rp slo sauce gun Trane acs 015\n© EZ { Fat Ais ig)\n(aq = (mg)\n—\na = ACI\n>| ‘Unique biend of d-varse strains af probiatics thet support digestion, Granched Chain tone Amino tes Acids —— 16,54 —_ 5% i\neee — 8\n=)\n> K 5 @ Borat derive from pineapples, Brometan helps in )\na PROFILE\" —\nToe, =\nTES\n=a “nr\nms aa) |\ncee\n> __GRANTE CD (CONTAIN NON-CALORIC ae SWEETENER\n@ —\nPATENTED on & ‘ABSORPTION PATENTED ENHANCED This = contains Sucralose | |\n‘ Top: FORMULA (EARS) Sin £1105\nBiozyme Gold is only a brand\nmark name\nand does not representits |"
+  },
+  {
+    "image": "t2.jpg",
+    "classification": "nutrition",
+    "ocr_text_length": 1099,
+    "nutrition": {
+      "carbohydrates_g": 3.0,
+      "total_fat_g": 0.0,
+      "protein_g": 93.0
+    },
+    "serving_size": 90.4,
+    "ingredients": null,
+    "fssai": null,
+    "raw_text_preview": "f\nNutrition Information\nServings Per 90.4 Container 29 Scoop)\n‘ening Size g (About 1\nGuentty Quantity, 1003 % BDA!\nPor 180-240 ml\nProtein smn, sa\n29 799 4) f\nCarbohydrate’ Tal 3g\nSuge” 19 3g For best results, mix up your shake 30-60 minutes, ff\nout, or have it as an anytime snackin 4 lj\nyour balanced, high-protein det.\n059 29 2 GOLD STANDARD™ 100% WHEY is designes for\n“Tans Fat og og 0% mixability and superior drinkability,\n_\n—— Of\nness Batch No.: 4\neo, ae 2920, Mfg. Date: /\nExp. Date: 4,\nMRP & 4\nProtein Stand (93%) (Whey Protein Isolate, Whe of y\n(oi UK on tn 0 Fevours Rs. per g:\nee vera tae ope product yf\naro PKD on: Gf 4\nReda\nFor a8 bf,\nproduct SUGARS\nOCCURRING Suggested Use: For heathy adult, consume pra Nigh\nYous your daily and protein requirements throughout with a combination the day as af\ndet and\nRECOMMENDED TH'S USAGE LEVEL: Ono serving per da. TH PRODUCT\nio ls USE PRODUCT OF AS A NUTRACEUTICAL SHOULO GE\neng, {Pas of GH TREAT A DET Ts AND\nTO TOBE USED ASA CURE GR PREVENT FoR A"
+  },
+  {
+    "image": "t3.jpg",
+    "classification": "nutrition",
+    "ocr_text_length": 3464,
+    "nutrition": {
+      "energy_kcal": 886.0,
+      "carbohydrates_g": 2.0,
+      "sugar_g": 22.0,
+      "protein_g": 10.0,
+      "saturated_fat_g": 31.0
+    },
+    "serving_size": 258.0,
+    "ingredients": null,
+    "fssai": null,
+    "raw_text_preview": "unflavoured NUTRITIONAL INFORMATION AMINO ACID PROFILE\nwhey protein concentrate  SHEBCAA\nenergy (kcal #)... 886.0... 1351 ...6.8%\n| scoop serving = 258 - No.of servings: 87 (approx) 759 26.5 48.2% © Isoleucine (g) is]\nRecommended daily servings: -2 servings per day carbohydrate as\n29\nINGREDIENTS total sugars 22 = (8)\nwhey protein concentrate 99.49% O10 O10% © AYSINE 2B\n(lecithin) dietary fibre (g) © OS\nBroMelain on total fat (2) 2.696 OF\n100% saturated fat (9) 31 18\nEVER. MUFA + PUFA NQ O18 = tryptophan amine OS\ntrans fat (Q) 0.0 ....0.0%\nWe fe partnered partnered with with Trunativ Trunativ to to find find th of the 6 z ...........\nmost credible and authentic sources\nwhey protein from USA & Europe, We blend cholesterol (mg) .... 46.9 = AFZININE OF\nthis protein in-house and af an ISO, HACCR gz 4 ia Note: All values under nutrition facts are approximate, (B) OB\nGMP and US FDA certified facility. And we (e)\ntest every batch for purity, . values per & serving established as & per: sea | ("
+  },
+  {
+    "image": "t4.jpg",
+    "classification": "nutrition",
+    "ocr_text_length": 830,
+    "nutrition": {
+      "protein_g": 99.49,
+      "energy_kcal": 6.89,
+      "sugar_g": 1.0,
+      "dietary_fiber_g": 0.196,
+      "total_fat_g": 2.6,
+      "saturated_fat_g": 5.1,
+      "sodium_mg": 3.896
+    },
+    "serving_size": null,
+    "ingredients": null,
+    "fssai": null,
+    "raw_text_preview": "INGREDIENTS AMINO ACID PROFILE ner 68\nwhey protein concentrate 99.49% og\n............... BCAA + 134g EAA\n(lecithin)\n0.696\n100% 29\nvaline 17\nlysine (g) 28\nmethionine (g) 05\nphenylalanine\nthreonine (g) 19\ntryptophan (g)\nhistidine (g) ou\nNUTRITIONAL INFORMATION\narginine (g) O7\nCYSTINE OZ\nenergy (kcal #)............. 386.0 135.1 6.89 «\n..... .....\n(8)\nprotein (g) 75.9 .......26.5 ..49.2% SIYCING O5\ncarbohydrate (s)......... - proline OF\ntyrosine (8)...\nG64... - OB\nsugars serine 1S\nadded (g)........ 0.0......0.0 0.0% «\n... (B)\ndietary fibre (g) <O.1 ....sO.0U 0.196 ° 1B\n.............. ...... (8) 29\naspartic acid\ntotal fat (8) BO 2.6% *\nfat glutamic acid (8)... HS\nsaturated (g)........ Il... 5.1% °\nMUFA + PUFA (Q) OG\ntrans fat (Q) 0.0 0.096\n......... .....\nsodium (mg) G5.4 .....3.896 e\ncholesterol (mg) ...........184.0 -\n..."
+  },
+  {
+    "image": "t5.jpg",
+    "classification": "nutrition",
+    "ocr_text_length": 1275,
+    "nutrition": {
+      "total_fat_g": 86.0,
+      "sodium_mg": 234.0,
+      "protein_g": 100.0
+    },
+    "serving_size": 30.9,
+    "ingredients": null,
+    "fssai": null,
+    "raw_text_preview": "~\n= =\nal\nin.\nij\ni Serving Size: 30.9\n| | 2808 per\nte ‘Acid, Contains Pari00g | #Persening\nin Serve,\nZe | | ote 263\ni Taurine, | 88g Ba\nRey Phosphate, Totalsugos 8389\n|\nik i Potassium Folic iodide, Acid TotolFat* 145g] 081g 0269 086 108\nMolybdate, | 090g) 000g 000\n‘Sodium* 234mg ”\ntobe by pregnant, | | 83649mg| 19085mg 985,\nUsed ™\nIncase | |\ni Glenymedication Giphysician This product ofacciden- is not | | s200me] 330mg] 350mg 990mg\ntallo ire used or os prevent for 200mg} ”\nony\nto\\be stored out of | (EEE mg]\nHtequired L-cutorine '50000mg\nae\nDaily | 3240\nouine\nDICINAL atroomtempera~ | ‘itoring\nt sunight & motsture. Keep | | a8\nfromdirect usage,, Viorina 5000\nafter | ls\n: oe ‘Worn 2 038mg 2825 1950\nMal Sectors, 8 120mg} | BN\n110070, 5780\ndelhi india a Bit\nj 800mg | no\n| 3273\nA 2a0meg| 4)\ni 992200 asim 9 09 | | B58\ntri “Song ae\nCanoe ne isa \\\nspatiweliness mg |\nindi. Chromium | 200\nene | wsdmeg 2833\n0619111470893 selenium 450mg 128\nOf india RDA coiulted on RDA ot men 5 woh |\nOrigin: 1205 18"
+  },
+  {
+    "image": "t6.jpg",
+    "classification": "nutrition",
+    "ocr_text_length": 2348,
+    "nutrition": {
+      "energy_kcal": 25.0,
+      "protein_g": 259.0,
+      "saturated_fat_g": 4.0
+    },
+    "serving_size": 1.0,
+    "ingredients": null,
+    "fssai": null,
+    "raw_text_preview": "=\n| |\n| || |\n1\nql A NT NUTRITIONAL FACTS Saving Se:\nProtein\n2 = PERS55GM ‘AMINO AMINO ACID PROFILE\nACID\n‘|\nBUILT TO HELP YOU REBUILD: Designed to fuel your fitness. Plant Protein covers 25 gro can oe Energy Aca\nom purity plant and heavy protein metal from tested. peas and brown Protein rice providing that a complete there amino acid prove of ‘or ofa Total Protein 259 46.30 | | Threonine 2552 mg\n= Plant ensures are no traces that an Serine\nperformance, any Glutamic Acid 339 mp\ney Dietary 4.269 3.15 | Acid\nBy & REAL SCIENCE ® BEST — ol oe a\nog |\nAND TECHNOLOGY 2x GUARANTEED! Ee\na 4 Plant Protein manufactured GMP, FDA, | | brand has a Polysaturated fatty\nis in all | | Sparkusion® acid 0.169\n180, FSSAI and andi HACCP Certlid are facity rigorously which tested, means | | flavor houses to deliver a « Se in | acid oem\nty inyedets products clean every scoop of Pint Protan Linoleno (Omega fatty acid) Cysteine Methionine emg\nmg\nip. Youre Monounsaturated acid faty 3 09 285\n= 0.07 m9 Isoleucine 14"
+  }
+]
