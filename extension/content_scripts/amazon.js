@@ -74,11 +74,15 @@
   // ─── ASIN Extraction ────────────────────────────────────────────────────────
 
   function extractASIN() {
-    // Most reliable: URL pattern /dp/XXXXXXXXXX
-    const urlMatch = window.location.pathname.match(/\/dp\/([A-Z0-9]{10})/);
-    if (urlMatch) return urlMatch[1];
+    // Pattern 1: /dp/XXXXXXXXXX
+    const dpMatch = window.location.pathname.match(/\/dp\/([A-Z0-9]{10})/);
+    if (dpMatch) return dpMatch[1];
 
-    // Fallback: meta tag or data attribute
+    // Pattern 2: /gp/product/XXXXXXXXXX
+    const gpMatch = window.location.pathname.match(/\/gp\/product\/([A-Z0-9]{10})/);
+    if (gpMatch) return gpMatch[1];
+
+    // Fallback: data attribute
     const meta = document.querySelector('[data-asin]');
     if (meta) return meta.getAttribute('data-asin');
 
@@ -326,31 +330,62 @@
     return match ? match[1].trim() : null;
   }
 
-  // ─── Image URL (for OCR fallback) ──────────────────────────────────────────
-
-  function extractImageUrl() {
-    // Primary product image
-    const img = document.querySelector("#landingImage, #imgBlkFront, #main-image");
-    return img ? img.src : null;
-  }
-
-  // ─── Nutrition Image Detection ─────────────────────────────────────────────
+  // ─── Gallery Image Extraction ──────────────────────────────────────────────
 
   /**
-   * Detect if nutrition facts appear to be in an image (OCR needed).
-   * Heuristic: very little structured nutrition data found, but
-   * an image with alt text mentioning nutrition exists.
+   * Extract all product gallery image URLs.
+   *
+   * Amazon stores full-resolution URLs in the `data-a-dynamic-image` attribute
+   * as a JSON object mapping url → [width, height].
+   * The last 4 images in the gallery are typically:
+   *   - Back of product (nutrition table, ingredients)
+   *   - FSSAI license number close-up
+   *   - Barcode
+   *   - (sometimes) additional label shot
+   *
+   * We grab all gallery URLs and send the last 4 to the backend for OCR.
    */
-  function detectNutritionImageUrl() {
-    const imgs = document.querySelectorAll("img");
-    for (const img of imgs) {
-      const alt = (img.alt || "").toLowerCase();
-      const src = img.src || "";
-      if (alt.includes("nutrition") || alt.includes("supplement facts")) {
-        return src;
-      }
+  function extractGalleryImages() {
+    const urls = new Set();
+
+    // Strategy 1: data-a-dynamic-image attribute (highest resolution)
+    const dynamicImgs = document.querySelectorAll("[data-a-dynamic-image]");
+    for (const el of dynamicImgs) {
+      try {
+        const data = JSON.parse(el.getAttribute("data-a-dynamic-image"));
+        Object.keys(data).forEach(url => {
+          // Filter out tiny thumbnails (< 100px)
+          const dims = data[url];
+          if (dims[0] >= 100 && dims[1] >= 100) urls.add(url);
+        });
+      } catch (_) {}
     }
-    return null;
+
+    // Strategy 2: thumbnail strip in the image gallery
+    const thumbImgs = document.querySelectorAll(
+      "#altImages img, .imageThumbnail img, li.image.item img"
+    );
+    for (const img of thumbImgs) {
+      // Thumbnails have _SS40_ or _SS60_ in URL — upgrade to full resolution
+      const src = (img.src || "")
+        .replace(/_SS\d+_/, "_SL1500_")
+        .replace(/_AC_US\d+_/, "_AC_SL1500_")
+        .replace(/_AC_SR\d+,\d+_/, "_AC_SL1500_");
+      if (src && src.startsWith("https://")) urls.add(src);
+    }
+
+    // Strategy 3: main image
+    const mainImg = document.querySelector("#landingImage, #imgBlkFront");
+    if (mainImg?.src) urls.add(mainImg.src);
+
+    const allUrls = [...urls];
+
+    return {
+      all_image_urls:   allUrls,
+      // Last 4 are back-side, FSSAI, barcode — the useful ones for OCR
+      ocr_target_urls:  allUrls.slice(-4),
+      primary_image_url: allUrls[0] || null,
+    };
   }
 
   // ─── Main Extraction ────────────────────────────────────────────────────────
@@ -363,42 +398,46 @@
     }
 
     const nutritionFacts = extractNutritionFacts();
-    const quantityG = extractQuantity();
-    const price = extractPrice();
+    const quantityG      = extractQuantity();
+    const price          = extractPrice();
+    const gallery        = extractGalleryImages();
 
     const payload = {
       // Identity
-      platform: "amazon.in",
-      platform_id: asin,
-      url: window.location.href,
+      platform:     "amazon.in",
+      platform_id:  asin,
+      url:          window.location.href,
       extracted_at: new Date().toISOString(),
 
       // Product info
       product_name: extractProductName(),
-      brand: extractBrand(),
+      brand:        extractBrand(),
 
       // Pricing & quantity
-      price_inr: price,
-      quantity_g: quantityG,
-      price_per_100g: (price && quantityG) ? parseFloat(((price / quantityG) * 100).toFixed(2)) : null,
+      price_inr:      price,
+      quantity_g:     quantityG,
+      price_per_100g: (price && quantityG)
+        ? parseFloat(((price / quantityG) * 100).toFixed(2))
+        : null,
 
-      // Nutrition (per serving, as listed on label)
-      serving_size_g: extractServingSize(),
+      // Nutrition from DOM (per serving as listed)
+      serving_size_g:  extractServingSize(),
       nutrition_facts: nutritionFacts,
 
       // NLP inputs
-      claims_text: extractClaimsText(),
+      claims_text:      extractClaimsText(),
       ingredients_text: extractIngredients(),
 
-      // Media
-      primary_image_url: extractImageUrl(),
-      nutrition_image_url: detectNutritionImageUrl(),
+      // Images
+      primary_image_url: gallery.primary_image_url,
+      ocr_target_urls:   gallery.ocr_target_urls,   // last 4 — sent for OCR
+      total_images:      gallery.all_image_urls.length,
 
-      // Data quality signals
-      extraction_method: nutritionFacts ? "dom_table" : "text_fallback",
+      // Data quality signals (DOM only — OCR will upgrade these)
+      extraction_method:    nutritionFacts ? "dom_table" : "text_fallback",
       nutrition_confidence: nutritionFacts
-        ? (Object.keys(nutritionFacts).length >= 4 ? "high" : "medium")
-        : "low",
+        ? (Object.keys(nutritionFacts).length >= 4 ? "medium" : "low")
+        : "low",  // Always start at medium max — OCR may upgrade to high
     };
 
     return payload;

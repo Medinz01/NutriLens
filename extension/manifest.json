@@ -24,7 +24,12 @@
 
   "content_scripts": [
     {
-      "matches": ["https://www.amazon.in/*/dp/*", "https://www.amazon.in/dp/*"],
+      "matches": [
+        "https://www.amazon.in/*/dp/*",
+        "https://www.amazon.in/dp/*",
+        "https://www.amazon.in/gp/product/*",
+        "https://www.amazon.in/*/gp/product/*"
+      ],
       "js": ["content_scripts/amazon.js"],
       "run_at": "document_idle"
     },

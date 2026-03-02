@@ -46,6 +46,8 @@ class ProductSubmitRequest(BaseModel):
     # Media
     primary_image_url:   Optional[str] = None
     nutrition_image_url: Optional[str] = None
+    ocr_target_urls:     Optional[list[str]] = None
+    total_images:        Optional[int] = None
 
     # Quality signals
     extraction_method:    Optional[str] = None

@@ -1,10 +1,34 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { resolve } from "path";
+import { copyFileSync, mkdirSync, cpSync } from "fs";
+
+// Plugin to copy extension static files into dist after build
+function copyExtensionFiles() {
+  return {
+    name: "copy-extension-files",
+    closeBundle() {
+      // manifest.json → dist/
+      copyFileSync("manifest.json", "dist/manifest.json");
+
+      // content_scripts/ → dist/content_scripts/
+      mkdirSync("dist/content_scripts", { recursive: true });
+      cpSync("content_scripts", "dist/content_scripts", { recursive: true });
+
+      // icons/ → dist/icons/ (if exists)
+      try {
+        mkdirSync("dist/icons", { recursive: true });
+        cpSync("icons", "dist/icons", { recursive: true });
+      } catch (_) {}
+
+      console.log("[NutriLens] Extension files copied to dist/");
+    }
+  };
+}
 
 export default defineConfig({
-  plugins: [react()],
-  base: "./",   // Critical for Chrome extensions — no server, all paths must be relative
+  plugins: [react(), copyExtensionFiles()],
+  base: "./",
   build: {
     outDir: "dist",
     emptyOutDir: true,
@@ -14,13 +38,12 @@ export default defineConfig({
         background: resolve(__dirname, "background.js"),
       },
       output: {
-        // Keep background.js name stable — manifest references it directly
         entryFileNames: "[name].js",
         chunkFileNames: "chunks/[name]-[hash].js",
         assetFileNames: "assets/[name]-[hash][extname]",
       },
     },
     cssCodeSplit: false,
-    minify: false, // Readable during dev — flip to true for production
+    minify: false,
   },
 });

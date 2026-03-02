@@ -181,18 +181,20 @@ async function getCurrentTabProduct() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.url) return { product: null };
 
-  // Match pending product by URL — extract platform_id from URL
-  for (const [platformId, product] of pendingProducts.entries()) {
-    if (product.url && tab.url.includes(platformId)) {
-      return { product };
-    }
+  // Extract ASIN from current tab URL
+  const dpMatch  = tab.url.match(/\/dp\/([A-Z0-9]{10})/);
+  const gpMatch  = tab.url.match(/\/gp\/product\/([A-Z0-9]{10})/);
+  const platformId = dpMatch?.[1] || gpMatch?.[1];
+
+  if (platformId) {
+    const product = await getPendingProduct(platformId);
+    if (product) return { product };
   }
 
-  // Fallback: match by URL directly
-  for (const [, product] of pendingProducts.entries()) {
-    if (product.url === tab.url) {
-      return { product };
-    }
+  // Fallback: scan all pending products for URL match
+  const all = await getAllPendingProducts();
+  for (const product of Object.values(all)) {
+    if (product.url === tab.url) return { product };
   }
 
   return { product: null };
@@ -207,21 +209,45 @@ async function getCurrentTabPlatformId() {
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
 
-// Stores extracted (but not yet submitted) products keyed by platformId.
-// User must click "Add to Compare" to actually submit.
-const pendingProducts = new Map();
+// ─── Pending Products (session-persisted) ────────────────────────────────────
+// MV3 service workers go to sleep and lose in-memory state.
+// chrome.storage.session persists for the browser session but survives SW restarts.
+
+async function setPendingProduct(platformId, product) {
+  const key = `pending:${platformId}`;
+  await chrome.storage.session.set({ [key]: product });
+}
+
+async function getPendingProduct(platformId) {
+  const key = `pending:${platformId}`;
+  const result = await chrome.storage.session.get(key);
+  return result[key] || null;
+}
+
+async function getAllPendingProducts() {
+  const all = await chrome.storage.session.get(null);
+  const pending = {};
+  for (const [key, val] of Object.entries(all)) {
+    if (key.startsWith("pending:")) {
+      const platformId = key.replace("pending:", "");
+      pending[platformId] = val;
+    }
+  }
+  return pending;
+}
 
 async function handleProductExtracted(payload) {
   const { platform_id } = payload;
 
-  // Store locally so popup can show a preview immediately
-  pendingProducts.set(platform_id, payload);
+  // Persist to session storage — survives service worker sleep/restart
+  await setPendingProduct(platform_id, payload);
 
   // Signal popup that a product is available on this page
   chrome.runtime.sendMessage({
     type: "PAGE_PRODUCT_AVAILABLE",
     platform_id,
     preview: {
+      platform_id,
       product_name: payload.product_name,
       brand: payload.brand,
       price_inr: payload.price_inr,
@@ -234,37 +260,58 @@ async function handleProductExtracted(payload) {
 }
 
 async function handleAddToCompare(platformId) {
-  const product = pendingProducts.get(platformId);
+  const product = await getPendingProduct(platformId);
   if (!product) {
-    return { ok: false, error: "No product data found for this page. Refresh and try again." };
+    return { ok: false, error: "No product data found. Refresh the page and try again." };
   }
 
-  // Add to local comparison set immediately (optimistic)
-  const addResult = await addToComparisonSet({ ...product, status: "processing" });
-  if (!addResult.added) {
-    return { ok: false, reason: addResult.reason, limit: addResult.limit };
+  // Deduplicate check
+  const current = await getComparisonSet();
+  const exists = current.find(p => p.platform_id === platformId);
+  if (exists) return { ok: false, reason: "duplicate" };
+
+  if (current.length >= MAX_COMPARISON_ITEMS) {
+    return { ok: false, reason: "limit_reached", limit: MAX_COMPARISON_ITEMS };
   }
 
-  // Submit to backend for ML analysis
+  // Add to set immediately with "processing" status — respond to popup right away
+  const updated = [...current, { ...product, status: "processing" }];
+  await saveComparisonSet(updated);
+
+  // Do the HTTP call AFTER responding (fire and forget from popup's perspective)
+  submitToBackend(product, platformId);
+
+  return { ok: true };
+}
+
+// Separated so it runs after sendResponse is called
+async function submitToBackend(product, platformId) {
   try {
     const response = await submitProduct(product);
 
     if (response.cached) {
-      // Cache hit — data already available
-      await updateProductInSet(platformId, response.data);
-      return { ok: true, cached: true, data: response.data };
+      await updateProductInSet(platformId, { ...response.data, status: "ready" });
+      chrome.runtime.sendMessage({
+        type: "PRODUCT_READY",
+        platform_id: platformId,
+        data: response.data
+      }).catch(() => {});
+      return;
     }
 
     if (response.job_id) {
-      // Cache miss — async job started
       activeJobs.set(platformId, { jobId: response.job_id, status: "processing" });
-      startPolling(platformId, response.job_id); // Don't await — runs in background
-      return { ok: true, job_id: response.job_id };
+      startPolling(platformId, response.job_id);
     }
 
   } catch (err) {
-    console.error("[NutriLens] Submit error:", err);
-    return { ok: false, error: "Backend unreachable. Running in offline mode." };
+    console.error("[NutriLens] Backend unreachable:", err);
+    await updateProductInSet(platformId, { status: "failed", error: "Backend unreachable" });
+    chrome.runtime.sendMessage({
+      type: "PRODUCT_FAILED",
+      platform_id: platformId,
+      error: "Backend unreachable. Is Docker running?"
+    }).catch(() => {});
   }
 }
 

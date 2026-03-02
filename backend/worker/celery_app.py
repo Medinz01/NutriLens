@@ -64,6 +64,7 @@ def analyze_product_task(self, job_id: str, raw_payload: dict, product_key: str,
     from engines.contradiction import run_contradiction_engine
     from engines.ranker import compute_score
     from engines.normalizer import normalize_nutrition
+    from engines.ocr import process_product_images
 
     r = sync_redis.from_url(settings.redis_url, decode_responses=True)
     job_key = f"job:{job_id}"
@@ -84,16 +85,45 @@ def analyze_product_task(self, job_id: str, raw_payload: dict, product_key: str,
         # ── 1. Normalize nutrition ────────────────────────────────────────
         normalized = normalize_nutrition(raw_payload)
 
-        # ── 2. Category detection ─────────────────────────────────────────
+        # ── 2. OCR Pipeline ───────────────────────────────────────────────
+        ocr_target_urls = raw_payload.get("ocr_target_urls") or []
+        dom_nutrition   = raw_payload.get("nutrition_facts") or {}
+        dom_serving     = raw_payload.get("serving_size_g")
+
+        ocr_result = {}
+        if ocr_target_urls:
+            logger.info(f"[worker] Running OCR on {len(ocr_target_urls)} images")
+            ocr_result = process_product_images(
+                ocr_target_urls=ocr_target_urls,
+                dom_nutrition=dom_nutrition,
+                dom_serving_size=dom_serving,
+            )
+
+            # If OCR found better nutrition, re-normalize with merged data
+            if ocr_result.get("ocr_success") and ocr_result.get("merged_nutrition"):
+                merged_payload = {**raw_payload}
+                merged_payload["nutrition_facts"] = ocr_result["merged_nutrition"]
+
+                # Use OCR serving size if DOM didn't have one
+                if not dom_serving and ocr_result.get("ocr_serving_size"):
+                    merged_payload["serving_size_g"] = ocr_result["ocr_serving_size"]
+
+                # Use OCR ingredients if DOM didn't have them
+                if not raw_payload.get("ingredients_text") and ocr_result.get("ocr_ingredients"):
+                    merged_payload["ingredients_text"] = ocr_result["ocr_ingredients"]
+
+                normalized = normalize_nutrition(merged_payload)
+
+        # ── 3. Category detection ─────────────────────────────────────────
         category = detect_category(raw_payload.get("product_name", ""),
                                    raw_payload.get("claims_text", ""))
 
-        # ── 3. Contradiction engine ────────────────────────────────────────
+        # ── 4. Contradiction engine ────────────────────────────────────────
         claims_text  = raw_payload.get("claims_text", "")
         nutrition    = normalized.get("per_100g", {})
         contradictions, vague_claims = run_contradiction_engine(claims_text, nutrition)
 
-        # ── 4. Score ──────────────────────────────────────────────────────
+        # ── 5. Score ──────────────────────────────────────────────────────
         scores = compute_score(
             nutrition_per_100g=normalized.get("per_100g", {}),
             nutrition_per_rs100=normalized.get("per_rs100", {}),
@@ -102,7 +132,7 @@ def analyze_product_task(self, job_id: str, raw_payload: dict, product_key: str,
             category=category,
         )
 
-        # ── 5. Build enriched product ──────────────────────────────────────
+        # ── 6. Build enriched product ──────────────────────────────────────
         enriched = {
             "platform_id":   platform_id,
             "platform":      platform,
@@ -115,10 +145,12 @@ def analyze_product_task(self, job_id: str, raw_payload: dict, product_key: str,
             "serving_size_g": raw_payload.get("serving_size_g"),
             "nutrition_per_100g":  normalized.get("per_100g"),
             "nutrition_per_rs100": normalized.get("per_rs100"),
-            "nutrition_confidence": raw_payload.get("nutrition_confidence"),
-            "extraction_method":    raw_payload.get("extraction_method"),
+            "nutrition_confidence": ocr_result.get("confidence") or raw_payload.get("nutrition_confidence"),
+            "extraction_method":    "ocr" if ocr_result.get("ocr_success") else raw_payload.get("extraction_method"),
+            "fssai_number":         ocr_result.get("fssai_number"),
+            "ocr_conflicts":        ocr_result.get("conflicts", []),
             "analysis": {
-                "factual_claims":   [],   # Phase 4: spaCy + BERT
+                "factual_claims":   [],
                 "certified_claims": [],
                 "vague_claims":     [{"claim": c["claim"], "type": "VAGUE", "reason": c["reason"]}
                                      for c in vague_claims],
