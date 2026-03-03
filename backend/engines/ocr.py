@@ -197,93 +197,113 @@ def parse_ingredients_from_ocr(ocr_text: str) -> str | None:
 # ─── Nutrition Table Parser (Steps 3 & 4) ─────────────────────────────────────
 
 def parse_nutrition_from_rows(rows: list, image_width: int) -> dict:
-    """Extract nutrition data from grouped rows using column tracking."""
+    """Extract nutrition data from grouped rows using data-driven column locking."""
     facts = {}
-    target_x = None
-    extracted_xs = []
-    locked_x = None
+    potential_rows = []
     
-    # Dynamic tolerance: 5% of image width
-    x_tolerance = image_width * 0.05
+    # Words that indicate a row is an ingredient list or descriptive text
+    exclude_words = ["ingredient", "concentrate", "isolate", "blend", "plant protein", "amino", "profile"]
 
-    # Strategy A: Strict Header Detection
-    for row in rows:
-        row_text = " ".join(w["text"].lower() for w in row)
-        if "per" in row_text and ("100" in row_text or "serving" in row_text):
-            for word in row:
-                wt = word["text"].lower()
-                if "100" in wt or "serving" in wt:
-                    target_x = word["x"]
-                    break
-        if target_x is not None:
-            break
-
-    # Strategy B (Fallback): 1D Clustering of numeric X-coordinates
-    if target_x is None:
-        number_xs = [word["x"] for row in rows for word in row if re.match(r'^\d+\.?\d*$', word["text"].strip())]
-        if number_xs:
-            clusters = []
-            for x in number_xs:
-                added = False
-                for cluster in clusters:
-                    if abs(cluster["center"] - x) < x_tolerance:
-                        cluster["xs"].append(x)
-                        cluster["center"] = sum(cluster["xs"]) / len(cluster["xs"])
-                        added = True
-                        break
-                if not added:
-                    clusters.append({"center": x, "xs": [x]})
-            
-            if clusters:
-                best_cluster = max(clusters, key=lambda c: len(c["xs"]))
-                target_x = best_cluster["center"]
-
-    # Nutrient Extraction
     for row in rows:
         row_text = " ".join(w["text"].lower() for w in row)
         
+        # 1. Skip paragraphs and ingredient lists
+        words_only = [w for w in row_text.split() if not re.search(r'\d', w)]
+        if len(words_only) > 6:
+            continue
+        if any(ew in row_text for ew in exclude_words):
+            continue
+            
         matched_key = None
-        if ("energy" in row_text or "kcal" in row_text) and "energy_kcal" not in facts: matched_key = "energy_kcal"
-        elif "protein" in row_text and "protein_g" not in facts: matched_key = "protein_g"
-        elif "carbohydrate" in row_text and "carbohydrates_g" not in facts: matched_key = "carbohydrates_g"
-        elif "sugar" in row_text and "sugar_g" not in facts: matched_key = "sugar_g"
-        elif "fat" in row_text and "saturated" not in row_text and "total_fat_g" not in facts: matched_key = "total_fat_g"
-        elif "saturated" in row_text and "saturated_fat_g" not in facts: matched_key = "saturated_fat_g"
-        elif "sodium" in row_text and "sodium_mg" not in facts: matched_key = "sodium_mg"
-        elif ("fiber" in row_text or "fibre" in row_text) and "dietary_fiber_g" not in facts: matched_key = "dietary_fiber_g"
-        elif "calcium" in row_text and "calcium_mg" not in facts: matched_key = "calcium_mg"
-        elif "iron" in row_text and "iron_mg" not in facts: matched_key = "iron_mg"
+        keyword_target = None
+        
+        # 2. Strict Word Boundaries
+        if re.search(r'\benergy\b|\bkcal\b', row_text) and "energy_kcal" not in facts:
+            matched_key = "energy_kcal"
+            keyword_target = "energy" if "energy" in row_text else "kcal"
+        elif re.search(r'\bprotein\b', row_text) and "protein_g" not in facts:
+            matched_key = "protein_g"
+            keyword_target = "protein"
+        elif re.search(r'\bcarbohydrate[s]?\b', row_text) and "carbohydrates_g" not in facts:
+            matched_key = "carbohydrates_g"
+            keyword_target = "carbohydrate"
+        elif re.search(r'\bsugar[s]?\b', row_text) and "sugar_g" not in facts:
+            matched_key = "sugar_g"
+            keyword_target = "sugar"
+        elif re.search(r'\bfat\b', row_text) and "saturated" not in row_text and "total_fat_g" not in facts:
+            matched_key = "total_fat_g"
+            keyword_target = "fat"
+        elif re.search(r'\bsaturated\b', row_text) and "saturated_fat_g" not in facts:
+            matched_key = "saturated_fat_g"
+            keyword_target = "saturated"
+        elif re.search(r'\bsodium\b', row_text) and "sodium_mg" not in facts:
+            matched_key = "sodium_mg"
+            keyword_target = "sodium"
+        elif re.search(r'\bfiber\b|\bfibre\b', row_text) and "dietary_fiber_g" not in facts:
+            matched_key = "dietary_fiber_g"
+            keyword_target = "fiber" if "fiber" in row_text else "fibre"
+        elif re.search(r'\bcalcium\b', row_text) and "calcium_mg" not in facts:
+            matched_key = "calcium_mg"
+            keyword_target = "calcium"
+        elif re.search(r'\biron\b', row_text) and "iron_mg" not in facts:
+            matched_key = "iron_mg"
+            keyword_target = "iron"
 
         if matched_key:
+            # Find X coordinate of the keyword to ignore numbers to its left
+            keyword_x = 0
+            for word in row:
+                if keyword_target in word["text"].lower():
+                    keyword_x = word["x"]
+                    break
+            
             nums = []
             for word in row:
+                if word["x"] < keyword_x:  # Ensure number is to the right of the label
+                    continue
+                    
                 match = re.search(r'(\d+\.?\d*)', word["text"])
                 if match:
-                    try: nums.append({"val": float(match.group(1)), "x": word["x"]})
-                    except ValueError: continue
-
+                    val_str = match.group(1)
+                    try:
+                        val = float(val_str)
+                        # Fix Tesseract 'g' -> '9' bug (e.g., 25g -> 259)
+                        # Grams of a macro per 100g/serving physically cannot exceed 100.
+                        if val > 100 and val_str.endswith('9') and matched_key in ["protein_g", "carbohydrates_g", "total_fat_g", "sugar_g", "saturated_fat_g"]:
+                            val = float(val_str[:-1])
+                        
+                        nums.append({"val": val, "x": word["x"]})
+                    except ValueError:
+                        continue
+            
             if nums:
-                current_target = locked_x if locked_x is not None else target_x
-                
-                if current_target is not None:
-                    # Choose numeric value whose X is closest to the target column X
-                    best_num = min(nums, key=lambda n: abs(n["x"] - current_target))
-                    # Enforce dynamic window
-                    if locked_x is None or abs(best_num["x"] - locked_x) < x_tolerance:
-                        facts[matched_key] = best_num["val"]
-                        extracted_xs.append(best_num["x"])
-                else:
-                    # Blind fallback
-                    facts[matched_key] = nums[1]["val"] if len(nums) >= 3 else nums[0]["val"]
-                    extracted_xs.append(nums[1]["x"] if len(nums) >= 3 else nums[0]["x"])
+                # Sort numbers visually left-to-right
+                nums.sort(key=lambda n: n["x"])
+                potential_rows.append({"key": matched_key, "nums": nums})
 
-                # Dynamic Lock: Anchor to the median X after 3 successful extractions
-                if locked_x is None and len(extracted_xs) >= 3:
-                    sorted_xs = sorted(extracted_xs)
-                    locked_x = sorted_xs[len(sorted_xs) // 2]
+    # Step 3: Data-Driven Column Locking
+    if not potential_rows:
+        return facts
+        
+    # Get the X coordinate of the FIRST number found in every valid row
+    first_col_xs = [pr["nums"][0]["x"] for pr in potential_rows if pr["nums"]]
+    
+    if first_col_xs:
+        first_col_xs.sort()
+        # Lock onto the median X of the first column
+        locked_x = first_col_xs[len(first_col_xs) // 2] 
+        x_tolerance = image_width * 0.1  # Expanded 10% tolerance for column alignment
+        
+        for pr in potential_rows:
+            # Filter numbers that fall within our locked column band
+            valid_nums = [n for n in pr["nums"] if abs(n["x"] - locked_x) < x_tolerance]
+            
+            if valid_nums:
+                # Pick the one closest to the median X
+                best = min(valid_nums, key=lambda n: abs(n["x"] - locked_x))
+                facts[pr["key"]] = best["val"]
 
     return facts
-
 
 # ─── Reconciliation ───────────────────────────────────────────────────────────
 

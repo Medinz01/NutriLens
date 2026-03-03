@@ -1,20 +1,22 @@
 {
   "manifest_version": 3,
   "name": "NutriLens",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "AI-powered nutritional claim verification and product comparison for e-commerce.",
 
   "permissions": [
     "storage",
     "activeTab",
-    "scripting"
+    "scripting",
+    "tabs"
   ],
 
   "host_permissions": [
     "https://www.amazon.in/*",
     "https://www.bigbasket.com/*",
     "https://www.flipkart.com/*",
-    "http://localhost:8000/*"
+    "http://localhost:8000/*",
+    "http://localhost:8001/*"
   ],
 
   "background": {
@@ -31,16 +33,6 @@
         "https://www.amazon.in/*/gp/product/*"
       ],
       "js": ["content_scripts/amazon.js"],
-      "run_at": "document_idle"
-    },
-    {
-      "matches": ["https://www.bigbasket.com/pd/*"],
-      "js": ["content_scripts/bigbasket.js"],
-      "run_at": "document_idle"
-    },
-    {
-      "matches": ["https://www.flipkart.com/*"],
-      "js": ["content_scripts/flipkart.js"],
       "run_at": "document_idle"
     }
   ],

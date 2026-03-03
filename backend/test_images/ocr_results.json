@@ -4,7 +4,6 @@
     "classification": "nutrition",
     "ocr_text_length": 866,
     "nutrition": {
-      "protein_g": 359.0,
       "sugar_g": 2.0
     },
     "serving_size": 2.0,
@@ -17,9 +16,7 @@
     "classification": "nutrition",
     "ocr_text_length": 1099,
     "nutrition": {
-      "carbohydrates_g": 3.0,
-      "total_fat_g": 0.0,
-      "protein_g": 93.0
+      "carbohydrates_g": 3.0
     },
     "serving_size": 90.4,
     "ingredients": null,
@@ -32,9 +29,7 @@
     "ocr_text_length": 3464,
     "nutrition": {
       "energy_kcal": 886.0,
-      "carbohydrates_g": 2.0,
-      "sugar_g": 22.0,
-      "protein_g": 10.0,
+      "total_fat_g": 0.0,
       "saturated_fat_g": 31.0
     },
     "serving_size": 258.0,
@@ -47,13 +42,12 @@
     "classification": "nutrition",
     "ocr_text_length": 830,
     "nutrition": {
-      "protein_g": 99.49,
-      "energy_kcal": 6.89,
-      "sugar_g": 1.0,
-      "dietary_fiber_g": 0.196,
-      "total_fat_g": 2.6,
+      "energy_kcal": 135.1,
+      "protein_g": 26.5,
+      "dietary_fiber_g": 0.0,
+      "total_fat_g": 0.0,
       "saturated_fat_g": 5.1,
-      "sodium_mg": 3.896
+      "sodium_mg": 5.4
     },
     "serving_size": null,
     "ingredients": null,
@@ -65,9 +59,7 @@
     "classification": "nutrition",
     "ocr_text_length": 1275,
     "nutrition": {
-      "total_fat_g": 86.0,
-      "sodium_mg": 234.0,
-      "protein_g": 100.0
+      "sodium_mg": 234.0
     },
     "serving_size": 30.9,
     "ingredients": null,
@@ -78,11 +70,7 @@
     "image": "t6.jpg",
     "classification": "nutrition",
     "ocr_text_length": 2348,
-    "nutrition": {
-      "energy_kcal": 25.0,
-      "protein_g": 259.0,
-      "saturated_fat_g": 4.0
-    },
+    "nutrition": {},
     "serving_size": 1.0,
     "ingredients": null,
     "fssai": null,

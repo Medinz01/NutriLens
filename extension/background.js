@@ -320,3 +320,85 @@ async function submitToBackend(product, platformId) {
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
+
+
+// ─── Snippet Capture ─────────────────────────────────────────────────────────
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type !== "SNIP_CAPTURE") return false;
+
+  handleSnipCapture(message, sender).then(sendResponse);
+  return true;
+});
+
+async function handleSnipCapture({ rect, devicePixelRatio }, sender) {
+  const tabId = sender.tab.id;
+
+  try {
+    // 1. Screenshot the visible tab
+    const dataUrl = await chrome.tabs.captureVisibleTab(
+      sender.tab.windowId,
+      { format: "png" }
+    );
+
+    // 2. Crop to selection using OffscreenCanvas
+    const dpr    = devicePixelRatio || 1;
+    const blob   = await (await fetch(dataUrl)).blob();
+    const bitmap = await createImageBitmap(blob);
+
+    const canvas = new OffscreenCanvas(
+      Math.round(rect.w * dpr),
+      Math.round(rect.h * dpr)
+    );
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(
+      bitmap,
+      Math.round(rect.x * dpr), Math.round(rect.y * dpr),
+      Math.round(rect.w * dpr), Math.round(rect.h * dpr),
+      0, 0,
+      Math.round(rect.w * dpr), Math.round(rect.h * dpr)
+    );
+
+    // 3. Convert to base64
+    const cropBlob   = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.95 });
+    const arrayBuf   = await cropBlob.arrayBuffer();
+    // Chunked base64 — spread operator overflows stack on large images
+    const bytes  = new Uint8Array(arrayBuf);
+    let binary   = "";
+    const chunk  = 8192;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    }
+    const base64 = btoa(binary);
+
+    // 4. Send to OCR service
+    const ocrResp = await fetch("http://localhost:8001/extract/image", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ image: base64, mime_type: "image/jpeg" }),
+    });
+
+    if (!ocrResp.ok) {
+      const err = await ocrResp.text();
+      return { error: `OCR service error: ${err}` };
+    }
+
+    const ocrData = await ocrResp.json();
+
+    // 5. Store result keyed to tab, notify popup
+    const key = `snip:${tabId}`;
+    await chrome.storage.session.set({ [key]: { ...ocrData, tabId, timestamp: Date.now() } });
+
+    chrome.runtime.sendMessage({
+      type:    "SNIP_READY",
+      tabId,
+      data:    ocrData,
+    }).catch(() => {});
+
+    return { ok: true };
+
+  } catch (err) {
+    console.error("[NutriLens] Snip capture failed:", err);
+    return { error: err.message };
+  }
+}

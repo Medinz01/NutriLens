@@ -29,6 +29,8 @@ export default function App() {
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [loading, setLoading] = useState(true);
   const [addStatus, setAddStatus] = useState(null); // null | "adding" | "added" | "error" | "duplicate" | "limit"
+  const [snipResult, setSnipResult] = useState(null);   // OCR result from snippet capture
+  const [snipLoading, setSnipLoading] = useState(false);
 
   // ─── Init: load comparison set + check current tab ─────────────────────────
 
@@ -67,6 +69,10 @@ export default function App() {
               : p
           )
         );
+      }
+      if (message.type === "SNIP_READY") {
+        setSnipResult(message.data);
+        setSnipLoading(false);
       }
       if (message.type === "PRODUCT_FAILED") {
         setComparisonSet(prev =>
@@ -125,6 +131,18 @@ export default function App() {
 
   // ─── Render ───────────────────────────────────────────────────────────────
 
+  async function startSnip() {
+    setSnipLoading(true);
+    setSnipResult(null);
+    // Close popup, inject snip overlay into active tab
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files:  ["content_scripts/snip.js"],
+    });
+    window.close(); // close popup so user can draw selection
+  }
+
   return (
     <div style={styles.container}>
       {/* Header */}
@@ -144,6 +162,51 @@ export default function App() {
           </button>
         )}
       </div>
+
+      {/* Scan Label button — always visible on Amazon product pages */}
+      <div style={{ padding: "8px 12px 0", display: "flex", gap: "8px", alignItems: "center" }}>
+        <button
+          onClick={startSnip}
+          disabled={snipLoading}
+          style={{
+            background: snipLoading ? "#6b7280" : "#16a34a",
+            color: "#fff", border: "none", borderRadius: "6px",
+            padding: "7px 14px", fontSize: "13px", fontFamily: "system-ui",
+            cursor: snipLoading ? "default" : "pointer", flex: 1,
+          }}
+        >
+          {snipLoading ? "⏳ Scanning…" : "📷 Scan Nutrition Label"}
+        </button>
+        {snipResult && (
+          <button
+            onClick={() => setSnipResult(null)}
+            style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: "16px" }}
+          >✕</button>
+        )}
+      </div>
+
+      {/* Snip Result Panel */}
+      {snipResult && (
+        <div style={{
+          margin: "8px 12px", padding: "10px 12px",
+          background: "#f0fdf4", borderRadius: "8px",
+          border: "1px solid #bbf7d0", fontSize: "12px", fontFamily: "system-ui",
+        }}>
+          <div style={{ fontWeight: 600, color: "#15803d", marginBottom: "6px" }}>
+            ✓ Scanned — {Object.keys(snipResult.nutrition || {}).length} nutrients
+            {snipResult.fssai && <span style={{ marginLeft: "8px", color: "#6b7280" }}>FSSAI: {snipResult.fssai}</span>}
+          </div>
+          {Object.entries(snipResult.nutrition || {}).map(([k, v]) => (
+            <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "1px 0", color: "#374151" }}>
+              <span>{k.replace(/_/g, " ").replace(/ g$| mg$| kcal$/, "")}</span>
+              <span style={{ fontWeight: 500 }}>{v}{k.endsWith("_mg") ? " mg" : k.endsWith("_kcal") ? " kcal" : " g"}</span>
+            </div>
+          ))}
+          {snipResult.serving_size && (
+            <div style={{ marginTop: "4px", color: "#6b7280" }}>Serving: {snipResult.serving_size}g</div>
+          )}
+        </div>
+      )}
 
       {/* Page Product Banner — shown when a product is detected on current tab */}
       {pageProduct && view !== "detail" && (
