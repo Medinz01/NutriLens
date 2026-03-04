@@ -1,436 +1,380 @@
 /**
- * App.jsx — NutriLens Popup Root
+ * App.jsx — NutriLens Popup
  *
- * Three views:
- *   "page"    — Product detected on current page, offer to add
- *   "compare" — Comparison set table with scores
- *   "detail"  — Single product drill-down
+ * States per product:
+ *   awaiting_scan  → FSSAI scanning + "Scan Label" CTA
+ *   analyzed       → full nutrition + nutriscore + Compare button
+ *
+ * Views:
+ *   "home"    → current page product card
+ *   "compare" → comparison table
+ *   "detail"  → single product drill-down
  */
 
 import { useState, useEffect } from "react";
 import CompareTable from "./CompareTable.jsx";
 import ProductDetail from "./ProductDetail.jsx";
 
-// ─── Icons (inline SVG to avoid asset loading) ───────────────────────────────
+// ─── Grade badge ─────────────────────────────────────────────────────────────
 
-const LeafIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-    <path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1 2 2 4.18 2 8 0 5.5-4.78 10-10 10z"/>
-    <path d="M2 21c0-3 1.85-5.36 5.08-6C9.5 14.52 12 13 13 12"/>
-  </svg>
-);
+const GRADE_COLORS = {
+  A: { bg: "#00843b", text: "#fff" },
+  B: { bg: "#85bb2f", text: "#fff" },
+  C: { bg: "#fecb02", text: "#000" },
+  D: { bg: "#ee8100", text: "#fff" },
+  E: { bg: "#e63312", text: "#fff" },
+};
+
+function GradeBadge({ grade, size = 36 }) {
+  if (!grade) return null;
+  const { bg, text } = GRADE_COLORS[grade] || GRADE_COLORS.E;
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: "50%",
+      background: bg, color: text,
+      display: "flex", alignItems: "center", justifyContent: "center",
+      fontWeight: 700, fontSize: size * 0.45, flexShrink: 0,
+    }}>{grade}</div>
+  );
+}
+
+// ─── FSSAI status badge ───────────────────────────────────────────────────────
+
+function FssaiBadge({ status, fssai }) {
+  if (status === "scanning") return (
+    <span style={badge("#e0f2fe", "#0369a1")}>🔍 Checking FSSAI…</span>
+  );
+  if (status === "found") return (
+    <span style={badge("#dcfce7", "#15803d")}>✓ FSSAI {fssai}</span>
+  );
+  return (
+    <span style={badge("#fef9c3", "#854d0e")}>⚠ FSSAI not found</span>
+  );
+}
+
+function badge(bg, color) {
+  return {
+    background: bg, color, borderRadius: 4,
+    padding: "2px 7px", fontSize: 11, fontWeight: 500,
+    fontFamily: "system-ui",
+  };
+}
+
+// ─── Nutrient row ─────────────────────────────────────────────────────────────
+
+const NUTRIENT_LABELS = {
+  energy_kcal:      ["Energy",           "kcal"],
+  protein_g:        ["Protein",          "g"],
+  carbohydrates_g:  ["Carbohydrates",    "g"],
+  sugar_g:          ["  Total Sugars",   "g"],
+  added_sugar_g:    ["  Added Sugars",   "g"],
+  total_fat_g:      ["Total Fat",        "g"],
+  saturated_fat_g:  ["  Saturated Fat",  "g"],
+  trans_fat_g:      ["  Trans Fat",      "g"],
+  dietary_fiber_g:  ["Dietary Fiber",    "g"],
+  sodium_mg:        ["Sodium",           "mg"],
+  cholesterol_mg:   ["Cholesterol",      "mg"],
+};
+
+function NutritionPanel({ nutrition, servingSize }) {
+  const ordered = Object.keys(NUTRIENT_LABELS).filter(k => k in nutrition);
+  return (
+    <div style={{ fontSize: 12, fontFamily: "system-ui" }}>
+      {servingSize && (
+        <div style={{ color: "#6b7280", marginBottom: 6 }}>
+          Per serving ({servingSize}g)
+        </div>
+      )}
+      {ordered.map(k => {
+        const [label, unit] = NUTRIENT_LABELS[k];
+        return (
+          <div key={k} style={{
+            display: "flex", justifyContent: "space-between",
+            padding: "2px 0", borderBottom: "1px solid #f3f4f6",
+            color: "#374151",
+          }}>
+            <span>{label}</span>
+            <span style={{ fontWeight: 500 }}>{nutrition[k]} {unit}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Product card (home view) ─────────────────────────────────────────────────
+
+function ProductCard({ product, onScan, onCompare, compareSet, snipLoading }) {
+  const analyzed     = product.status === "analyzed";
+  const alreadyAdded = compareSet.some(p => p.platform_id === product.platform_id);
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div style={{
+      margin: "10px 12px", padding: "12px",
+      background: "#fff", borderRadius: 10,
+      border: "1px solid #e5e7eb",
+      boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
+      fontFamily: "system-ui",
+    }}>
+      {/* Product header */}
+      <div style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 8 }}>
+        {analyzed && product.nutriscore && (
+          <GradeBadge grade={product.nutriscore.grade} size={40} />
+        )}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 600, fontSize: 13, color: "#111", lineHeight: 1.3,
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {product.product_name || "Product"}
+          </div>
+          <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>
+            {product.brand && <span>{product.brand} · </span>}
+            {product.quantity_g && <span>{product.quantity_g}g · </span>}
+            {product.price_inr && <span>₹{product.price_inr}</span>}
+          </div>
+          <div style={{ marginTop: 4 }}>
+            <FssaiBadge status={product.fssai_status} fssai={product.fssai} />
+          </div>
+        </div>
+      </div>
+
+      {/* Analyzed state — show nutriscore summary */}
+      {analyzed && product.nutriscore && (
+        <div style={{
+          background: "#f9fafb", borderRadius: 6, padding: "8px 10px",
+          marginBottom: 8, display: "flex", alignItems: "center", gap: 10,
+        }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 12, color: "#374151", fontWeight: 500 }}>
+              NutriScore {product.nutriscore.grade}
+            </div>
+            <div style={{ fontSize: 11, color: "#6b7280" }}>
+              Confidence: {product.confidence}
+              {product.nutrition && ` · ${Object.keys(product.nutrition).length} nutrients`}
+            </div>
+          </div>
+          <button
+            onClick={() => setExpanded(e => !e)}
+            style={{ fontSize: 11, color: "#2563eb", background: "none",
+              border: "none", cursor: "pointer", padding: 0 }}
+          >
+            {expanded ? "Hide ▲" : "Details ▼"}
+          </button>
+        </div>
+      )}
+
+      {/* Expanded nutrition panel */}
+      {expanded && product.nutrition && (
+        <div style={{ marginBottom: 8 }}>
+          <NutritionPanel nutrition={product.nutrition} servingSize={product.serving_size} />
+        </div>
+      )}
+
+      {/* CTA buttons */}
+      <div style={{ display: "flex", gap: 8 }}>
+        {!analyzed ? (
+          <button onClick={onScan} disabled={snipLoading} style={{
+            flex: 1, background: snipLoading ? "#9ca3af" : "#16a34a",
+            color: "#fff", border: "none", borderRadius: 6,
+            padding: "8px 0", fontSize: 13, fontWeight: 600,
+            cursor: snipLoading ? "default" : "pointer",
+          }}>
+            {snipLoading ? "⏳ Scanning…" : "📷 Scan Nutrition Label"}
+          </button>
+        ) : (
+          <>
+            <button onClick={onScan} style={{
+              flex: 0, background: "none", border: "1px solid #d1d5db",
+              borderRadius: 6, padding: "7px 10px", fontSize: 12,
+              color: "#374151", cursor: "pointer",
+            }}>
+              🔄 Re-scan
+            </button>
+            <button onClick={onCompare} disabled={alreadyAdded} style={{
+              flex: 1,
+              background: alreadyAdded ? "#d1fae5" : "#2563eb",
+              color: alreadyAdded ? "#065f46" : "#fff",
+              border: "none", borderRadius: 6,
+              padding: "8px 0", fontSize: 13, fontWeight: 600,
+              cursor: alreadyAdded ? "default" : "pointer",
+            }}>
+              {alreadyAdded ? "✓ Added to Compare" : "+ Add to Compare"}
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const [view, setView] = useState("compare"); // "compare" | "detail" | "page"
-  const [comparisonSet, setComparisonSet] = useState([]);
-  const [pageProduct, setPageProduct] = useState(null);   // Product detected on current tab
-  const [selectedProduct, setSelectedProduct] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [addStatus, setAddStatus] = useState(null); // null | "adding" | "added" | "error" | "duplicate" | "limit"
-  const [snipResult, setSnipResult] = useState(null);   // OCR result from snippet capture
+  const [view, setView]               = useState("home");
+  const [product, setProduct]         = useState(null);
+  const [compareSet, setCompareSet]   = useState([]);
+  const [selectedProduct, setSelected] = useState(null);
+  const [loading, setLoading]         = useState(true);
   const [snipLoading, setSnipLoading] = useState(false);
 
-  // ─── Init: load comparison set + check current tab ─────────────────────────
-
   useEffect(() => {
-    loadComparisonSet();
-    checkCurrentTab();
-    listenForMessages();
+    init();
+    const listener = (msg) => {
+      if (msg.type === "PAGE_PRODUCT_AVAILABLE") {
+        loadPageProduct();
+      }
+      if (msg.type === "FSSAI_RESULT") {
+        setProduct(p => p?.platform_id === msg.platform_id
+          ? { ...p, fssai: msg.fssai, fssai_status: msg.fssai_status }
+          : p
+        );
+      }
+      if (msg.type === "SCAN_COMPLETE") {
+        setSnipLoading(false);
+        setProduct(p => p?.platform_id === msg.platform_id
+          ? { ...p, ...msg.data }
+          : p
+        );
+        loadCompareSet();
+      }
+    };
+    chrome.runtime.onMessage.addListener(listener);
+    return () => chrome.runtime.onMessage.removeListener(listener);
   }, []);
 
-  async function loadComparisonSet() {
-    setLoading(true);
-    const response = await sendMessage({ type: "GET_COMPARISON_SET" });
-    setComparisonSet(response?.set || []);
+  async function init() {
+    await Promise.all([loadPageProduct(), loadCompareSet()]);
     setLoading(false);
   }
 
-  async function checkCurrentTab() {
-    // Ask background for any product pending on the current tab
-    const response = await sendMessage({ type: "GET_PAGE_PRODUCT" });
-    if (response?.product) {
-      setPageProduct(response.product);
-    }
+  async function loadPageProduct() {
+    const resp = await chrome.runtime.sendMessage({ type: "GET_PAGE_PRODUCT" });
+    if (resp?.product) setProduct(resp.product);
   }
 
-  function listenForMessages() {
-    chrome.runtime.onMessage.addListener((message) => {
-      if (message.type === "PAGE_PRODUCT_AVAILABLE") {
-        setPageProduct(message.preview);
-      }
-      if (message.type === "PRODUCT_READY") {
-        // Update comparison set with enriched data
-        setComparisonSet(prev =>
-          prev.map(p =>
-            p.platform_id === message.platform_id
-              ? { ...p, ...message.data, status: "ready" }
-              : p
-          )
-        );
-      }
-      if (message.type === "SNIP_READY") {
-        setSnipResult(message.data);
-        setSnipLoading(false);
-      }
-      if (message.type === "PRODUCT_FAILED") {
-        setComparisonSet(prev =>
-          prev.map(p =>
-            p.platform_id === message.platform_id
-              ? { ...p, status: "failed", error: message.error }
-              : p
-          )
-        );
-      }
-    });
+  async function loadCompareSet() {
+    const resp = await chrome.runtime.sendMessage({ type: "GET_COMPARE_SET" });
+    setCompareSet(resp?.set || []);
   }
-
-  // ─── Actions ──────────────────────────────────────────────────────────────
-
-  async function handleAddToCompare() {
-    if (!pageProduct) return;
-    setAddStatus("adding");
-
-    const response = await sendMessage({
-      type: "ADD_TO_COMPARE",
-      platform_id: pageProduct.platform_id,
-    });
-
-    if (response?.ok) {
-      setAddStatus("added");
-      await loadComparisonSet();
-      setTimeout(() => setAddStatus(null), 2000);
-    } else if (response?.reason === "duplicate") {
-      setAddStatus("duplicate");
-      setTimeout(() => setAddStatus(null), 2000);
-    } else if (response?.reason === "limit_reached") {
-      setAddStatus("limit");
-      setTimeout(() => setAddStatus(null), 2000);
-    } else {
-      setAddStatus("error");
-      console.error("[NutriLens] Add failed:", response);
-      setTimeout(() => setAddStatus(null), 3000);
-    }
-  }
-
-  async function handleRemove(platformId) {
-    await sendMessage({ type: "REMOVE_FROM_SET", platform_id: platformId });
-    await loadComparisonSet();
-  }
-
-  async function handleClearAll() {
-    await sendMessage({ type: "CLEAR_SET" });
-    setComparisonSet([]);
-  }
-
-  function handleSelectProduct(product) {
-    setSelectedProduct(product);
-    setView("detail");
-  }
-
-  // ─── Render ───────────────────────────────────────────────────────────────
 
   async function startSnip() {
     setSnipLoading(true);
-    setSnipResult(null);
-    // Close popup, inject snip overlay into active tab
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       files:  ["content_scripts/snip.js"],
     });
-    window.close(); // close popup so user can draw selection
+    window.close();
+  }
+
+  async function handleAddToCompare() {
+    if (!product) return;
+    const resp = await chrome.runtime.sendMessage({
+      type: "ADD_TO_COMPARE",
+      platform_id: product.platform_id,
+    });
+    if (resp?.ok) {
+      await loadCompareSet();
+      setProduct(p => ({ ...p })); // trigger re-render for button state
+    } else if (resp?.error) {
+      alert("NutriLens: " + resp.error);
+    }
+  }
+
+  async function handleRemove(platform_id) {
+    const resp = await chrome.runtime.sendMessage({ type: "REMOVE_FROM_COMPARE", platform_id });
+    setCompareSet(resp?.set || []);
+  }
+
+  async function handleClearAll() {
+    await chrome.runtime.sendMessage({ type: "CLEAR_COMPARE" });
+    setCompareSet([]);
   }
 
   return (
-    <div style={styles.container}>
+    <div style={{ width: 360, minHeight: 200, background: "#f9fafb", fontFamily: "system-ui" }}>
+
       {/* Header */}
-      <div style={styles.header}>
-        <div style={styles.logo}>
-          <span style={styles.logoIcon}><LeafIcon /></span>
-          <span style={styles.logoText}>NutriLens</span>
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        padding: "10px 14px", background: "#fff",
+        borderBottom: "1px solid #e5e7eb",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 18 }}>🌿</span>
+          <span style={{ fontWeight: 700, fontSize: 15, color: "#15803d" }}>NutriLens</span>
         </div>
-        {comparisonSet.length > 0 && view !== "compare" && (
-          <button style={styles.navBtn} onClick={() => setView("compare")}>
-            Compare ({comparisonSet.length})
-          </button>
-        )}
-        {view === "detail" && (
-          <button style={styles.navBtn} onClick={() => setView("compare")}>
-            ← Back
-          </button>
-        )}
-      </div>
-
-      {/* Scan Label button — always visible on Amazon product pages */}
-      <div style={{ padding: "8px 12px 0", display: "flex", gap: "8px", alignItems: "center" }}>
-        <button
-          onClick={startSnip}
-          disabled={snipLoading}
-          style={{
-            background: snipLoading ? "#6b7280" : "#16a34a",
-            color: "#fff", border: "none", borderRadius: "6px",
-            padding: "7px 14px", fontSize: "13px", fontFamily: "system-ui",
-            cursor: snipLoading ? "default" : "pointer", flex: 1,
-          }}
-        >
-          {snipLoading ? "⏳ Scanning…" : "📷 Scan Nutrition Label"}
-        </button>
-        {snipResult && (
+        <div style={{ display: "flex", gap: 6 }}>
           <button
-            onClick={() => setSnipResult(null)}
-            style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: "16px" }}
-          >✕</button>
-        )}
-      </div>
-
-      {/* Snip Result Panel */}
-      {snipResult && (
-        <div style={{
-          margin: "8px 12px", padding: "10px 12px",
-          background: "#f0fdf4", borderRadius: "8px",
-          border: "1px solid #bbf7d0", fontSize: "12px", fontFamily: "system-ui",
-        }}>
-          <div style={{ fontWeight: 600, color: "#15803d", marginBottom: "6px" }}>
-            ✓ Scanned — {Object.keys(snipResult.nutrition || {}).length} nutrients
-            {snipResult.fssai && <span style={{ marginLeft: "8px", color: "#6b7280" }}>FSSAI: {snipResult.fssai}</span>}
-          </div>
-          {Object.entries(snipResult.nutrition || {}).map(([k, v]) => (
-            <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "1px 0", color: "#374151" }}>
-              <span>{k.replace(/_/g, " ").replace(/ g$| mg$| kcal$/, "")}</span>
-              <span style={{ fontWeight: 500 }}>{v}{k.endsWith("_mg") ? " mg" : k.endsWith("_kcal") ? " kcal" : " g"}</span>
-            </div>
-          ))}
-          {snipResult.serving_size && (
-            <div style={{ marginTop: "4px", color: "#6b7280" }}>Serving: {snipResult.serving_size}g</div>
-          )}
+            onClick={() => setView("home")}
+            style={navBtn(view === "home")}
+          >Home</button>
+          <button
+            onClick={() => setView("compare")}
+            style={navBtn(view === "compare")}
+          >
+            Compare {compareSet.length > 0 && `(${compareSet.length})`}
+          </button>
         </div>
-      )}
+      </div>
 
-      {/* Page Product Banner — shown when a product is detected on current tab */}
-      {pageProduct && view !== "detail" && (
-        <PageProductBanner
-          product={pageProduct}
-          addStatus={addStatus}
-          onAdd={handleAddToCompare}
-          alreadyInSet={comparisonSet.some(p => p.platform_id === pageProduct.platform_id)}
-        />
-      )}
-
-      {/* Main Content */}
-      <div style={styles.content}>
-        {loading ? (
-          <div style={styles.centered}>
-            <div style={styles.spinner} />
-            <p style={styles.hint}>Loading...</p>
+      {/* Content */}
+      {loading ? (
+        <div style={{ padding: 24, textAlign: "center", color: "#9ca3af" }}>Loading…</div>
+      ) : view === "home" ? (
+        product ? (
+          <ProductCard
+            product={product}
+            onScan={startSnip}
+            onCompare={handleAddToCompare}
+            compareSet={compareSet}
+            snipLoading={snipLoading}
+          />
+        ) : (
+          <div style={{ padding: 24, textAlign: "center" }}>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>🔍</div>
+            <div style={{ fontSize: 13, color: "#6b7280" }}>
+              Open a product page on Amazon, BigBasket, or Flipkart
+            </div>
           </div>
-        ) : view === "compare" ? (
-          comparisonSet.length === 0 ? (
-            <EmptyState />
-          ) : (
-            <CompareTable
-              products={comparisonSet}
-              onSelectProduct={handleSelectProduct}
-              onRemove={handleRemove}
-              onClearAll={handleClearAll}
-            />
-          )
-        ) : view === "detail" && selectedProduct ? (
+        )
+      ) : view === "compare" ? (
+        compareSet.length === 0 ? (
+          <div style={{ padding: 24, textAlign: "center" }}>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>📊</div>
+            <div style={{ fontSize: 13, color: "#6b7280" }}>
+              Scan products and click "+ Add to Compare" to build your comparison
+            </div>
+          </div>
+        ) : (
+          <CompareTable
+            products={compareSet}
+            onSelectProduct={(p) => { setSelected(p); setView("detail"); }}
+            onRemove={handleRemove}
+            onClearAll={handleClearAll}
+          />
+        )
+      ) : view === "detail" && selectedProduct ? (
+        <div>
+          <button
+            onClick={() => setView("compare")}
+            style={{ margin: "10px 12px", background: "none", border: "none",
+              color: "#2563eb", cursor: "pointer", fontSize: 13 }}
+          >← Back</button>
           <ProductDetail product={selectedProduct} />
-        ) : null}
-      </div>
+        </div>
+      ) : null}
     </div>
   );
 }
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
-
-function PageProductBanner({ product, addStatus, onAdd, alreadyInSet }) {
-  const statusMessages = {
-    adding:    "Analyzing...",
-    added:     "✓ Added!",
-    duplicate: "Already in list",
-    limit:     "List full (max 5)",
-    error:     "Failed — retry",
+function navBtn(active) {
+  return {
+    background: active ? "#dcfce7" : "none",
+    color: active ? "#15803d" : "#6b7280",
+    border: "none", borderRadius: 6,
+    padding: "4px 10px", fontSize: 12,
+    fontWeight: active ? 600 : 400,
+    cursor: "pointer",
   };
-
-  return (
-    <div style={styles.banner}>
-      <div style={styles.bannerInfo}>
-        <p style={styles.bannerName}>{truncate(product.product_name, 45)}</p>
-        <p style={styles.bannerMeta}>
-          {product.price_inr ? `₹${product.price_inr.toLocaleString("en-IN")}` : ""}
-          {product.quantity_g ? ` · ${product.quantity_g}g` : ""}
-          {product.nutrition_confidence ? ` · ${product.nutrition_confidence} confidence` : ""}
-        </p>
-      </div>
-      <button
-        style={{
-          ...styles.addBtn,
-          ...(alreadyInSet ? styles.addBtnDone : {}),
-          ...(addStatus === "adding" ? styles.addBtnLoading : {}),
-        }}
-        onClick={onAdd}
-        disabled={!!addStatus || alreadyInSet}
-      >
-        {alreadyInSet ? "✓ Added" : addStatus ? statusMessages[addStatus] : "+ Compare"}
-      </button>
-    </div>
-  );
 }
-
-function EmptyState() {
-  return (
-    <div style={styles.centered}>
-      <div style={{ fontSize: 32, marginBottom: 8 }}>🔍</div>
-      <p style={styles.emptyTitle}>No products yet</p>
-      <p style={styles.hint}>
-        Browse any protein powder, health bar, or cereal on Amazon, BigBasket, or Flipkart —
-        then click <strong>+ Compare</strong> to add it.
-      </p>
-    </div>
-  );
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function truncate(str, n) {
-  if (!str) return "";
-  return str.length > n ? str.slice(0, n) + "…" : str;
-}
-
-function sendMessage(msg) {
-  return new Promise((resolve) => {
-    chrome.runtime.sendMessage(msg, resolve);
-  });
-}
-
-// ─── Styles ───────────────────────────────────────────────────────────────────
-
-const styles = {
-  container: {
-    width: 380,
-    minHeight: 200,
-    maxHeight: 560,
-    fontFamily: "'Inter', -apple-system, sans-serif",
-    fontSize: 13,
-    color: "#1a1a1a",
-    backgroundColor: "#ffffff",
-    display: "flex",
-    flexDirection: "column",
-  },
-  header: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    padding: "12px 16px",
-    borderBottom: "1px solid #f0f0f0",
-    backgroundColor: "#f9fafb",
-  },
-  logo: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-  },
-  logoIcon: {
-    color: "#16a34a",
-    display: "flex",
-  },
-  logoText: {
-    fontWeight: 700,
-    fontSize: 15,
-    color: "#16a34a",
-    letterSpacing: "-0.3px",
-  },
-  navBtn: {
-    fontSize: 12,
-    color: "#6b7280",
-    background: "none",
-    border: "none",
-    cursor: "pointer",
-    padding: "4px 8px",
-    borderRadius: 4,
-  },
-  banner: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    padding: "10px 16px",
-    backgroundColor: "#f0fdf4",
-    borderBottom: "1px solid #bbf7d0",
-    gap: 12,
-  },
-  bannerInfo: {
-    flex: 1,
-    minWidth: 0,
-  },
-  bannerName: {
-    margin: 0,
-    fontWeight: 600,
-    fontSize: 12,
-    lineHeight: 1.3,
-    color: "#111827",
-    whiteSpace: "nowrap",
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-  },
-  bannerMeta: {
-    margin: "2px 0 0",
-    fontSize: 11,
-    color: "#6b7280",
-  },
-  addBtn: {
-    flexShrink: 0,
-    backgroundColor: "#16a34a",
-    color: "#fff",
-    border: "none",
-    borderRadius: 6,
-    padding: "7px 12px",
-    fontSize: 12,
-    fontWeight: 600,
-    cursor: "pointer",
-    whiteSpace: "nowrap",
-  },
-  addBtnDone: {
-    backgroundColor: "#9ca3af",
-    cursor: "default",
-  },
-  addBtnLoading: {
-    backgroundColor: "#4ade80",
-    cursor: "wait",
-  },
-  content: {
-    flex: 1,
-    overflowY: "auto",
-  },
-  centered: {
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 32,
-    textAlign: "center",
-    gap: 8,
-  },
-  emptyTitle: {
-    margin: 0,
-    fontWeight: 600,
-    fontSize: 14,
-    color: "#374151",
-  },
-  hint: {
-    margin: 0,
-    fontSize: 12,
-    color: "#9ca3af",
-    lineHeight: 1.5,
-  },
-  spinner: {
-    width: 24,
-    height: 24,
-    border: "3px solid #e5e7eb",
-    borderTopColor: "#16a34a",
-    borderRadius: "50%",
-    animation: "spin 0.8s linear infinite",
-  },
-};

@@ -350,28 +350,40 @@
 
     // Strategy 1: data-a-dynamic-image attribute (highest resolution)
     const dynamicImgs = document.querySelectorAll("[data-a-dynamic-image]");
+    console.log("[NutriLens] data-a-dynamic-image elements found:", dynamicImgs.length);
     for (const el of dynamicImgs) {
       try {
         const data = JSON.parse(el.getAttribute("data-a-dynamic-image"));
         Object.keys(data).forEach(url => {
-          // Filter out tiny thumbnails (< 100px)
           const dims = data[url];
           if (dims[0] >= 100 && dims[1] >= 100) urls.add(url);
         });
       } catch (_) {}
     }
 
-    // Strategy 2: thumbnail strip in the image gallery
-    const thumbImgs = document.querySelectorAll(
-      "#altImages img, .imageThumbnail img, li.image.item img"
-    );
-    for (const img of thumbImgs) {
-      // Thumbnails have _SS40_ or _SS60_ in URL — upgrade to full resolution
-      const src = (img.src || "")
-        .replace(/_SS\d+_/, "_SL1500_")
-        .replace(/_AC_US\d+_/, "_AC_SL1500_")
-        .replace(/_AC_SR\d+,\d+_/, "_AC_SL1500_");
-      if (src && src.startsWith("https://")) urls.add(src);
+    // Strategy 2: thumbnail strip
+    const thumbSelectors = [
+      "#altImages img",
+      ".imageThumbnail img",
+      "li.image.item img",
+      "#imageBlock_feature_div img",
+      ".a-button-thumbnail img",
+      "[data-action='main-image-click'] img",
+    ];
+    for (const sel of thumbSelectors) {
+      const imgs = document.querySelectorAll(sel);
+      if (imgs.length > 0) {
+        console.log(`[NutriLens] Thumbnail selector "${sel}" found ${imgs.length} images`);
+      }
+      for (const img of imgs) {
+        const src = (img.src || "")
+          .replace(/_SS\d+_/, "_SL1500_")
+          .replace(/_AC_US\d+_/, "_AC_SL1500_")
+          .replace(/_AC_SR[\d,]+_/, "_AC_SL1500_")
+          .replace(/_SX\d+_/, "_SL1500_")
+          .replace(/_SY\d+_/, "_SL1500_");
+        if (src && src.startsWith("https://")) urls.add(src);
+      }
     }
 
     // Strategy 3: main image
@@ -379,11 +391,12 @@
     if (mainImg?.src) urls.add(mainImg.src);
 
     const allUrls = [...urls];
+    console.log("[NutriLens] Total gallery images found:", allUrls.length);
+    console.log("[NutriLens] OCR targets (last 4):", allUrls.slice(-4));
 
     return {
-      all_image_urls:   allUrls,
-      // Last 4 are back-side, FSSAI, barcode — the useful ones for OCR
-      ocr_target_urls:  allUrls.slice(-4),
+      all_image_urls:    allUrls,
+      ocr_target_urls:   allUrls.slice(-4),
       primary_image_url: allUrls[0] || null,
     };
   }
@@ -443,23 +456,75 @@
     return payload;
   }
 
+  // ─── Seller FSSAI Extraction ────────────────────────────────────────────────
+
+  /**
+   * Amazon mandates sellers display FSSAI in their "About Seller" page.
+   * We fetch that page and extract the 14-digit license number from plain text.
+   * Much more reliable than OCR on product images.
+   */
+  async function extractSellerFssai() {
+    try {
+      // Seller link: "Sold by <a href="/sp?seller=...">SellerName</a>"
+      const sellerLink = document.querySelector(
+        '#sellerProfileTriggerId, #merchant-info a, .offer-display-feature-text a[href*="seller="]'
+      );
+      if (!sellerLink) return null;
+
+      let href = sellerLink.getAttribute("href");
+      if (!href) return null;
+      if (!href.startsWith("http")) {
+        href = "https://www.amazon.in" + href;
+      }
+
+      // Fetch seller About page — add &ref=dp_merchant_link if needed
+      const url = href.includes("sp?") ? href : href + (href.includes("?") ? "&" : "?") + "ref=dp_merchant_link";
+
+      const resp = await fetch(url, { credentials: "include" });
+      if (!resp.ok) return null;
+
+      const html = await resp.text();
+
+      // Amazon policy: sellers must write "FSSAI license number: XXXXXXXXXXXXXX"
+      const match = html.match(/FSSAI\s+[Ll]icense\s+[Nn]umber\s*[:\-]?\s*([0-9]{14})/i)
+                 || html.match(/FSSAI\s*[:\-]\s*([0-9]{14})/i)
+                 || html.match(/([0-9]{14})/);  // fallback: any 14-digit number
+
+      if (match) {
+        const num = match[1];
+        // Validate: first 2 digits must be a valid Indian state code (10–35)
+        const stateCode = parseInt(num.substring(0, 2));
+        if (stateCode >= 10 && stateCode <= 35) {
+          console.log("[NutriLens] FSSAI found from seller page:", num);
+          return num;
+        }
+      }
+    } catch (e) {
+      console.warn("[NutriLens] Seller FSSAI fetch failed:", e.message);
+    }
+    return null;
+  }
+
   // ─── Entry Point ────────────────────────────────────────────────────────────
 
-  function init() {
+  async function init() {
     // Small delay to let dynamic content (React/hydration) settle
-    setTimeout(() => {
-      const data = extractProductData();
+    await new Promise(r => setTimeout(r, 1500));
 
-      if (!data) return;
+    const data = extractProductData();
+    if (!data) return;
 
-      console.log("[NutriLens] Extracted payload:", data);
+    // Extract FSSAI from seller page (fast, DOM-based, no OCR needed)
+    const fssai = await extractSellerFssai();
+    data.fssai        = fssai;
+    data.fssai_status = fssai ? "found" : "not_found";
 
-      // Notify background service worker that product data is available
-      chrome.runtime.sendMessage({
-        type: "PRODUCT_EXTRACTED",
-        payload: data
-      });
-    }, 1500);
+    console.log("[NutriLens] Extracted payload:", data);
+
+    chrome.runtime.sendMessage({
+      type: "PRODUCT_EXTRACTED",
+      payload: data,
+    });
   }
 
   init();

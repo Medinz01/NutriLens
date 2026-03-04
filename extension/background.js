@@ -1,354 +1,163 @@
 /**
- * background.js — NutriLens Service Worker (Manifest V3)
+ * background.js — NutriLens Service Worker
  *
- * Responsibilities:
- * 1. Receive PRODUCT_EXTRACTED messages from content scripts
- * 2. Submit product to backend API (or queue if offline)
- * 3. Poll for job completion with exponential backoff
- * 4. Persist comparison set to chrome.storage.local
- * 5. Notify popup when data is ready
+ * Flow:
+ *   1. Content script sends PRODUCT_EXTRACTED (DOM data + image URLs)
+ *   2. Background calls OCR /extract/url to find FSSAI from gallery images
+ *   3. Popup shows product + FSSAI status + "Scan Label" CTA
+ *   4. User takes snippet → SNIP_CAPTURE → OCR /extract/image
+ *   5. Background combines FSSAI + nutrition, calculates nutriscore
+ *   6. Popup shows full analysis, Compare becomes available
  */
 
-import { submitProduct, pollJobStatus } from "./utils/api.js";
+import { submitProduct } from "./utils/api.js";
 
-// ─── Constants ───────────────────────────────────────────────────────────────
+const OCR_SERVICE   = "http://localhost:8001";
+const MAX_COMPARE   = 5;
 
-const POLL_INTERVALS_MS = [2000, 4000, 8000, 12000, 15000, 15000, 15000, 15000, 15000, 15000];
-const MAX_COMPARISON_ITEMS = 5;
+// ─── Storage helpers ──────────────────────────────────────────────────────────
 
-// ─── Storage Helpers ─────────────────────────────────────────────────────────
+async function sessionGet(key)        { return (await chrome.storage.session.get(key))[key] || null; }
+async function sessionSet(key, val)   { await chrome.storage.session.set({ [key]: val }); }
+async function localGet(key)          { return (await chrome.storage.local.get(key))[key] || null; }
+async function localSet(key, val)     { await chrome.storage.local.set({ [key]: val }); }
 
-async function getComparisonSet() {
-  const result = await chrome.storage.local.get(["comparison_set"]);
-  return result.comparison_set || [];
+async function getCompareSet()        { return (await localGet("compare_set")) || []; }
+async function saveCompareSet(set)    { await localSet("compare_set", set); }
+
+function broadcast(msg) {
+  chrome.runtime.sendMessage(msg).catch(() => {});
 }
 
-async function saveComparisonSet(set) {
-  await chrome.storage.local.set({ comparison_set: set });
-}
+// ─── Message router ───────────────────────────────────────────────────────────
 
-async function addToComparisonSet(product) {
-  const current = await getComparisonSet();
+chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+  switch (msg.type) {
 
-  // Deduplicate by platform_id
-  const exists = current.find(p => p.platform_id === product.platform_id);
-  if (exists) {
-    console.log("[NutriLens] Product already in comparison set:", product.platform_id);
-    return { added: false, reason: "duplicate" };
-  }
+    case "PRODUCT_EXTRACTED":
+      handleProductExtracted(msg.payload).then(reply);
+      return true;
 
-  if (current.length >= MAX_COMPARISON_ITEMS) {
-    return { added: false, reason: "limit_reached", limit: MAX_COMPARISON_ITEMS };
-  }
+    case "SNIP_CAPTURE":
+      handleSnipCapture(msg, sender).then(reply);
+      return true;
 
-  const updated = [...current, product];
-  await saveComparisonSet(updated);
-  return { added: true, count: updated.length };
-}
+    case "GET_PAGE_PRODUCT":
+      getPageProduct().then(reply);
+      return true;
 
-async function removeFromComparisonSet(platformId) {
-  const current = await getComparisonSet();
-  const updated = current.filter(p => p.platform_id !== platformId);
-  await saveComparisonSet(updated);
-  return updated;
-}
+    case "ADD_TO_COMPARE":
+      handleAddToCompare(msg.platform_id).then(reply);
+      return true;
 
-async function clearComparisonSet() {
-  await saveComparisonSet([]);
-}
+    case "GET_COMPARE_SET":
+      getCompareSet().then(set => reply({ set }));
+      return true;
 
-// ─── Job State ───────────────────────────────────────────────────────────────
-// In-memory only — jobs don't need to survive service worker restarts.
-// If SW restarts mid-poll, the popup will re-trigger via PRODUCT_EXTRACTED.
+    case "REMOVE_FROM_COMPARE":
+      getCompareSet().then(set => {
+        const updated = set.filter(p => p.platform_id !== msg.platform_id);
+        saveCompareSet(updated).then(() => reply({ set: updated }));
+      });
+      return true;
 
-const activeJobs = new Map(); // platformId → { jobId, status, result }
-
-// ─── Polling Logic ───────────────────────────────────────────────────────────
-
-async function startPolling(platformId, jobId) {
-  console.log(`[NutriLens] Starting poll for job ${jobId}`);
-
-  for (let attempt = 0; attempt < POLL_INTERVALS_MS.length; attempt++) {
-    const delay = POLL_INTERVALS_MS[attempt];
-    await sleep(delay);
-
-    try {
-      const result = await pollJobStatus(jobId);
-      console.log(`[NutriLens] Poll attempt ${attempt + 1}:`, result.status);
-
-      if (result.status === "complete") {
-        activeJobs.set(platformId, { jobId, status: "complete", result: result.data });
-
-        // Update the stored product with enriched data
-        await updateProductInSet(platformId, result.data);
-
-        // Notify any open popups
-        chrome.runtime.sendMessage({
-          type: "PRODUCT_READY",
-          platform_id: platformId,
-          data: result.data
-        }).catch(() => {}); // Popup may not be open — ignore
-
-        return;
-      }
-
-      if (result.status === "failed") {
-        activeJobs.set(platformId, { jobId, status: "failed", error: result.error });
-        chrome.runtime.sendMessage({
-          type: "PRODUCT_FAILED",
-          platform_id: platformId,
-          error: result.error
-        }).catch(() => {});
-        return;
-      }
-
-      // Still queued/processing — continue polling
-
-    } catch (err) {
-      console.error(`[NutriLens] Poll error attempt ${attempt + 1}:`, err);
-    }
-  }
-
-  // Exhausted all attempts
-  activeJobs.set(platformId, { jobId, status: "timeout" });
-  chrome.runtime.sendMessage({
-    type: "PRODUCT_FAILED",
-    platform_id: platformId,
-    error: "Analysis timed out. Try again."
-  }).catch(() => {});
-}
-
-async function updateProductInSet(platformId, enrichedData) {
-  const current = await getComparisonSet();
-  const updated = current.map(p =>
-    p.platform_id === platformId
-      ? { ...p, ...enrichedData, status: "ready" }
-      : p
-  );
-  await saveComparisonSet(updated);
-}
-
-// ─── Message Handler ─────────────────────────────────────────────────────────
-
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  const { type } = message;
-
-  // ── Popup → background: get product detected on current tab
-  if (type === "GET_PAGE_PRODUCT") {
-    getCurrentTabProduct().then(sendResponse);
-    return true;
-  }
-
-  // ── Content script → background: new product detected on page
-  if (type === "PRODUCT_EXTRACTED") {
-    handleProductExtracted(message.payload).then(sendResponse);
-    return true; // Keep channel open for async response
-  }
-
-  // ── Popup → background: user clicked "Add to Compare"
-  if (type === "ADD_TO_COMPARE") {
-    handleAddToCompare(message.platform_id).then(sendResponse);
-    return true;
-  }
-
-  // ── Popup → background: get current comparison set
-  if (type === "GET_COMPARISON_SET") {
-    getComparisonSet().then(set => sendResponse({ set }));
-    return true;
-  }
-
-  // ── Popup → background: remove product from set
-  if (type === "REMOVE_FROM_SET") {
-    removeFromComparisonSet(message.platform_id).then(set => sendResponse({ set }));
-    return true;
-  }
-
-  // ── Popup → background: clear all
-  if (type === "CLEAR_SET") {
-    clearComparisonSet().then(() => sendResponse({ ok: true }));
-    return true;
-  }
-
-  // ── Popup → background: get status of a specific product's job
-  if (type === "GET_JOB_STATUS") {
-    const job = activeJobs.get(message.platform_id) || { status: "unknown" };
-    sendResponse(job);
-    return false;
+    case "CLEAR_COMPARE":
+      saveCompareSet([]).then(() => reply({ ok: true }));
+      return true;
   }
 });
 
-async function getCurrentTabProduct() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.url) return { product: null };
-
-  // Extract ASIN from current tab URL
-  const dpMatch  = tab.url.match(/\/dp\/([A-Z0-9]{10})/);
-  const gpMatch  = tab.url.match(/\/gp\/product\/([A-Z0-9]{10})/);
-  const platformId = dpMatch?.[1] || gpMatch?.[1];
-
-  if (platformId) {
-    const product = await getPendingProduct(platformId);
-    if (product) return { product };
-  }
-
-  // Fallback: scan all pending products for URL match
-  const all = await getAllPendingProducts();
-  for (const product of Object.values(all)) {
-    if (product.url === tab.url) return { product };
-  }
-
-  return { product: null };
-}
-
-async function getCurrentTabPlatformId() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.url) return null;
-  const match = tab.url.match(/\/dp\/([A-Z0-9]{10})/);
-  return match ? match[1] : null;
-}
-
-// ─── Handlers ────────────────────────────────────────────────────────────────
-
-// ─── Pending Products (session-persisted) ────────────────────────────────────
-// MV3 service workers go to sleep and lose in-memory state.
-// chrome.storage.session persists for the browser session but survives SW restarts.
-
-async function setPendingProduct(platformId, product) {
-  const key = `pending:${platformId}`;
-  await chrome.storage.session.set({ [key]: product });
-}
-
-async function getPendingProduct(platformId) {
-  const key = `pending:${platformId}`;
-  const result = await chrome.storage.session.get(key);
-  return result[key] || null;
-}
-
-async function getAllPendingProducts() {
-  const all = await chrome.storage.session.get(null);
-  const pending = {};
-  for (const [key, val] of Object.entries(all)) {
-    if (key.startsWith("pending:")) {
-      const platformId = key.replace("pending:", "");
-      pending[platformId] = val;
-    }
-  }
-  return pending;
-}
+// ─── Step 1: Product detected on page ────────────────────────────────────────
 
 async function handleProductExtracted(payload) {
   const { platform_id } = payload;
 
-  // Persist to session storage — survives service worker sleep/restart
-  await setPendingProduct(platform_id, payload);
+  // Store raw payload
+  // FSSAI already extracted from seller page by content script (DOM-based, reliable)
+  // Only fall back to image OCR if not found
+  const fssai        = payload.fssai       || null;
+  const fssai_status = payload.fssai_status || "not_found";
 
-  // Signal popup that a product is available on this page
-  chrome.runtime.sendMessage({
-    type: "PAGE_PRODUCT_AVAILABLE",
+  await sessionSet(`product:${platform_id}`, {
+    ...payload,
+    fssai,
+    fssai_status,
+    nutrition:  null,
+    nutriscore: null,
+    confidence: "low",
+    status:     "awaiting_scan",
+  });
+
+  // Notify popup immediately
+  broadcast({ type: "PAGE_PRODUCT_AVAILABLE", platform_id, preview: {
     platform_id,
-    preview: {
-      platform_id,
-      product_name: payload.product_name,
-      brand: payload.brand,
-      price_inr: payload.price_inr,
-      quantity_g: payload.quantity_g,
-      nutrition_confidence: payload.nutrition_confidence,
-    }
-  }).catch(() => {});
+    product_name:   payload.product_name,
+    brand:          payload.brand,
+    price_inr:      payload.price_inr,
+    quantity_g:     payload.quantity_g,
+    fssai,
+    fssai_status,
+    status:         "awaiting_scan",
+  }});
+
+  // Only run image OCR for FSSAI if seller page didn't have it
+  if (!fssai) {
+    extractFssai(platform_id, payload.ocr_target_urls || []);
+  }
 
   return { ok: true };
 }
 
-async function handleAddToCompare(platformId) {
-  const product = await getPendingProduct(platformId);
-  if (!product) {
-    return { ok: false, error: "No product data found. Refresh the page and try again." };
+async function extractFssai(platform_id, imageUrls) {
+  if (!imageUrls.length) {
+    await updateProduct(platform_id, { fssai_status: "not_found" });
+    broadcast({ type: "FSSAI_RESULT", platform_id, fssai: null, fssai_status: "not_found" });
+    return;
   }
 
-  // Deduplicate check
-  const current = await getComparisonSet();
-  const exists = current.find(p => p.platform_id === platformId);
-  if (exists) return { ok: false, reason: "duplicate" };
-
-  if (current.length >= MAX_COMPARISON_ITEMS) {
-    return { ok: false, reason: "limit_reached", limit: MAX_COMPARISON_ITEMS };
-  }
-
-  // Add to set immediately with "processing" status — respond to popup right away
-  const updated = [...current, { ...product, status: "processing" }];
-  await saveComparisonSet(updated);
-
-  // Do the HTTP call AFTER responding (fire and forget from popup's perspective)
-  submitToBackend(product, platformId);
-
-  return { ok: true };
-}
-
-// Separated so it runs after sendResponse is called
-async function submitToBackend(product, platformId) {
   try {
-    const response = await submitProduct(product);
+    const resp = await fetch(`${OCR_SERVICE}/extract/url`, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ urls: imageUrls }),
+    });
 
-    if (response.cached) {
-      await updateProductInSet(platformId, { ...response.data, status: "ready" });
-      chrome.runtime.sendMessage({
-        type: "PRODUCT_READY",
-        platform_id: platformId,
-        data: response.data
-      }).catch(() => {});
-      return;
+    if (resp.ok) {
+      const data = await resp.json();
+      const fssai       = data.fssai || null;
+      const fssai_status = fssai ? "found" : "not_found";
+
+      await updateProduct(platform_id, { fssai, fssai_status });
+      broadcast({ type: "FSSAI_RESULT", platform_id, fssai, fssai_status });
+    } else {
+      await updateProduct(platform_id, { fssai_status: "not_found" });
+      broadcast({ type: "FSSAI_RESULT", platform_id, fssai: null, fssai_status: "not_found" });
     }
-
-    if (response.job_id) {
-      activeJobs.set(platformId, { jobId: response.job_id, status: "processing" });
-      startPolling(platformId, response.job_id);
-    }
-
-  } catch (err) {
-    console.error("[NutriLens] Backend unreachable:", err);
-    await updateProductInSet(platformId, { status: "failed", error: "Backend unreachable" });
-    chrome.runtime.sendMessage({
-      type: "PRODUCT_FAILED",
-      platform_id: platformId,
-      error: "Backend unreachable. Is Docker running?"
-    }).catch(() => {});
+  } catch (e) {
+    console.warn("[NutriLens] FSSAI extraction failed:", e.message);
+    await updateProduct(platform_id, { fssai_status: "not_found" });
+    broadcast({ type: "FSSAI_RESULT", platform_id, fssai: null, fssai_status: "not_found" });
   }
 }
 
-// ─── Utilities ───────────────────────────────────────────────────────────────
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-
-// ─── Snippet Capture ─────────────────────────────────────────────────────────
-
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type !== "SNIP_CAPTURE") return false;
-
-  handleSnipCapture(message, sender).then(sendResponse);
-  return true;
-});
+// ─── Step 2: User takes snippet ───────────────────────────────────────────────
 
 async function handleSnipCapture({ rect, devicePixelRatio }, sender) {
   const tabId = sender.tab.id;
 
   try {
-    // 1. Screenshot the visible tab
+    // Screenshot visible tab
     const dataUrl = await chrome.tabs.captureVisibleTab(
-      sender.tab.windowId,
-      { format: "png" }
+      sender.tab.windowId, { format: "png" }
     );
 
-    // 2. Crop to selection using OffscreenCanvas
+    // Crop to selection
     const dpr    = devicePixelRatio || 1;
     const blob   = await (await fetch(dataUrl)).blob();
     const bitmap = await createImageBitmap(blob);
 
     const canvas = new OffscreenCanvas(
-      Math.round(rect.w * dpr),
-      Math.round(rect.h * dpr)
+      Math.round(rect.w * dpr), Math.round(rect.h * dpr)
     );
     const ctx = canvas.getContext("2d");
     ctx.drawImage(
@@ -359,20 +168,19 @@ async function handleSnipCapture({ rect, devicePixelRatio }, sender) {
       Math.round(rect.w * dpr), Math.round(rect.h * dpr)
     );
 
-    // 3. Convert to base64
-    const cropBlob   = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.95 });
-    const arrayBuf   = await cropBlob.arrayBuffer();
-    // Chunked base64 — spread operator overflows stack on large images
-    const bytes  = new Uint8Array(arrayBuf);
-    let binary   = "";
-    const chunk  = 8192;
-    for (let i = 0; i < bytes.length; i += chunk) {
-      binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    // Base64 encode (chunked — avoids call stack overflow)
+    const cropBlob  = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.95 });
+    const arrayBuf  = await cropBlob.arrayBuffer();
+    const bytes     = new Uint8Array(arrayBuf);
+    let binary      = "";
+    const CHUNK     = 8192;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
     }
     const base64 = btoa(binary);
 
-    // 4. Send to OCR service
-    const ocrResp = await fetch("http://localhost:8001/extract/image", {
+    // Send to OCR service
+    const ocrResp = await fetch(`${OCR_SERVICE}/extract/image`, {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
       body:    JSON.stringify({ image: base64, mime_type: "image/jpeg" }),
@@ -380,25 +188,144 @@ async function handleSnipCapture({ rect, devicePixelRatio }, sender) {
 
     if (!ocrResp.ok) {
       const err = await ocrResp.text();
-      return { error: `OCR service error: ${err}` };
+      return { error: `OCR error: ${err}` };
     }
 
     const ocrData = await ocrResp.json();
 
-    // 5. Store result keyed to tab, notify popup
-    const key = `snip:${tabId}`;
-    await chrome.storage.session.set({ [key]: { ...ocrData, tabId, timestamp: Date.now() } });
+    // Find which product is on this tab
+    const platform_id = await getPlatformIdForTab(tabId);
 
-    chrome.runtime.sendMessage({
-      type:    "SNIP_READY",
-      tabId,
-      data:    ocrData,
-    }).catch(() => {});
+    if (platform_id) {
+      const product = await sessionGet(`product:${platform_id}`);
+      const fssai   = ocrData.fssai || product?.fssai || null;
+
+      // Calculate nutriscore
+      const nutriscore = calcNutriScore(ocrData.nutrition || {}, ocrData.serving_size);
+      const confidence = calcConfidence(ocrData.nutrition || {}, ocrData.serving_size);
+
+      const enriched = {
+        nutrition:    ocrData.nutrition,
+        serving_size: ocrData.serving_size,
+        ingredients:  ocrData.ingredients,
+        fssai,
+        fssai_status: fssai ? "found" : (product?.fssai_status || "not_found"),
+        nutriscore,
+        confidence,
+        status:       "analyzed",
+      };
+
+      await updateProduct(platform_id, enriched);
+
+      broadcast({
+        type: "SCAN_COMPLETE",
+        platform_id,
+        data: enriched,
+      });
+    }
 
     return { ok: true };
 
   } catch (err) {
-    console.error("[NutriLens] Snip capture failed:", err);
+    console.error("[NutriLens] Snip failed:", err);
     return { error: err.message };
   }
+}
+
+// ─── Step 3: Add to Compare ───────────────────────────────────────────────────
+
+async function handleAddToCompare(platform_id) {
+  const product = await sessionGet(`product:${platform_id}`);
+  if (!product) return { ok: false, error: "No product data found" };
+  if (product.status !== "analyzed") return { ok: false, error: "Scan the nutrition label first" };
+
+  const set = await getCompareSet();
+  if (set.find(p => p.platform_id === platform_id)) return { ok: false, reason: "duplicate" };
+  if (set.length >= MAX_COMPARE) return { ok: false, reason: "limit_reached" };
+
+  const entry = {
+    platform_id,
+    product_name:  product.product_name,
+    brand:         product.brand,
+    price_inr:     product.price_inr,
+    quantity_g:    product.quantity_g,
+    nutrition:     product.nutrition,
+    serving_size:  product.serving_size,
+    ingredients:   product.ingredients,
+    fssai:         product.fssai,
+    fssai_status:  product.fssai_status,
+    nutriscore:    product.nutriscore,
+    confidence:    product.confidence,
+    status:        "ready",
+  };
+
+  await saveCompareSet([...set, entry]);
+  return { ok: true, count: set.length + 1 };
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+async function getPageProduct() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.url) return { product: null };
+  const m = tab.url.match(/\/dp\/([A-Z0-9]{10})/);
+  if (!m) return { product: null };
+  const product = await sessionGet(`product:${m[1]}`);
+  return { product };
+}
+
+async function getPlatformIdForTab(tabId) {
+  const tab = await chrome.tabs.get(tabId);
+  const m   = tab?.url?.match(/\/dp\/([A-Z0-9]{10})/);
+  return m ? m[1] : null;
+}
+
+async function updateProduct(platform_id, patch) {
+  const existing = (await sessionGet(`product:${platform_id}`)) || {};
+  await sessionSet(`product:${platform_id}`, { ...existing, ...patch });
+}
+
+// ─── NutriScore ───────────────────────────────────────────────────────────────
+
+function calcNutriScore(nutrition, servingSize) {
+  const f = servingSize ? (100 / servingSize) : 1;
+
+  const energy  = (nutrition.energy_kcal     || 0) * f;
+  const satFat  = (nutrition.saturated_fat_g || 0) * f;
+  const sugar   = (nutrition.sugar_g         || 0) * f;
+  const sodium  = (nutrition.sodium_mg       || 0) * f;
+  const protein = (nutrition.protein_g       || 0) * f;
+  const fiber   = (nutrition.dietary_fiber_g || 0) * f;
+
+  const neg =
+    pts(energy,  [80,160,240,320,400,480,560,640,720,800]) +
+    pts(satFat,  [1,2,3,4,5,6,7,8,9,10]) +
+    pts(sugar,   [4.5,9,13.5,18,22.5,27,31,36,40,45]) +
+    pts((sodium * 2.5 / 1000), [0.2,0.4,0.6,0.8,1.0,1.2,1.4,1.6,1.8,2.0]);
+
+  const pos =
+    pts(protein, [1.6,3.2,4.8,6.4,8.0]) +
+    pts(fiber,   [0.9,1.9,2.8,3.7,4.7]);
+
+  const score = neg >= 11 ? neg - pts(fiber, [0.9,1.9,2.8,3.7,4.7]) : neg - pos;
+
+  return {
+    score,
+    grade: score <= -1 ? "A" : score <= 2 ? "B" : score <= 10 ? "C" : score <= 18 ? "D" : "E",
+  };
+}
+
+function pts(val, thresholds) {
+  let p = 0;
+  for (const t of thresholds) { if (val > t) p++; else break; }
+  return p;
+}
+
+function calcConfidence(nutrition, servingSize) {
+  const count      = Object.keys(nutrition).length;
+  const hasProtein = "protein_g"    in nutrition;
+  const hasEnergy  = "energy_kcal"  in nutrition;
+  if (count >= 6 && hasProtein && hasEnergy && servingSize) return "high";
+  if (count >= 3 || (hasProtein && hasEnergy))              return "medium";
+  return "low";
 }
