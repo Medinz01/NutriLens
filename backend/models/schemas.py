@@ -19,16 +19,21 @@ class NutritionFactsInput(BaseModel):
     iron_mg:          Optional[float] = None
 
 
+class ClaimInput(BaseModel):
+    source: str   # "bullet" | "title" | "aplus_headline"
+    text:   str
+
+
 class ProductSubmitRequest(BaseModel):
     # Identity
-    platform: str
-    platform_id: str
-    url: str
-    extracted_at: str
+    platform:     str
+    platform_id:  str
+    url:          str
+    extracted_at: Optional[str] = None
 
     # Product info
     product_name: Optional[str] = None
-    brand: Optional[str] = None
+    brand:        Optional[str] = None
 
     # Pricing & quantity
     price_inr:      Optional[float] = None
@@ -36,18 +41,21 @@ class ProductSubmitRequest(BaseModel):
     price_per_100g: Optional[float] = None
 
     # Nutrition
-    serving_size_g:   Optional[float] = None
-    nutrition_facts:  Optional[NutritionFactsInput] = None
+    serving_size_g:  Optional[float] = None
+    nutrition_facts: Optional[NutritionFactsInput] = None
 
-    # NLP inputs
-    claims_text:      Optional[str] = Field(None, max_length=3000)
+    # Claims — structured array from DOM bullets
+    claims:           Optional[list[ClaimInput]] = []
+    claims_text:      Optional[str] = Field(None, max_length=5000)
     ingredients_text: Optional[str] = Field(None, max_length=2000)
 
+    # FSSAI
+    fssai: Optional[str] = None
+
     # Media
-    primary_image_url:   Optional[str] = None
-    nutrition_image_url: Optional[str] = None
-    ocr_target_urls:     Optional[list[str]] = None
-    total_images:        Optional[int] = None
+    primary_image_url: Optional[str] = None
+    ocr_target_urls:   Optional[list[str]] = None
+    total_images:      Optional[int] = None
 
     # Quality signals
     extraction_method:    Optional[str] = None

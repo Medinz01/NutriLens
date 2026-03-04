@@ -141,6 +141,22 @@ class ProductScore(Base):
     product = relationship("Product", back_populates="scores")
 
 
+class ClaimVerification(Base):
+    """Stores per-claim numeric verification results from ranker.py."""
+    __tablename__ = "claim_verifications"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    product_id  = Column(String, ForeignKey("products.id", ondelete="CASCADE"), index=True)
+    claim_text  = Column(Text, nullable=False)
+    nutrient    = Column(String)            # protein_g, sugar_g, etc.
+    claimed_val = Column(Float)
+    actual_val  = Column(Float)
+    unit        = Column(String)
+    verdict     = Column(String)            # verified | contradicted | unverifiable
+    explanation = Column(Text)
+    created_at  = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 # ─── Async Jobs ───────────────────────────────────────────────────────────────
 
 class AnalysisJob(Base):

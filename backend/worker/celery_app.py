@@ -82,6 +82,12 @@ def analyze_product_task(self, job_id: str, raw_payload: dict, product_key: str,
         platform    = raw_payload.get("platform", "").replace("https://www.", "").replace("/", "")
         platform_id = raw_payload.get("platform_id", "")
 
+        # ── DEBUG ─────────────────────────────────────────────────────────
+        ocr_urls_debug = raw_payload.get("ocr_target_urls")
+        logger.info(f"[worker] ocr_target_urls received: {ocr_urls_debug}")
+        logger.info(f"[worker] nutrition_facts received: {raw_payload.get('nutrition_facts')}")
+        # ── END DEBUG ─────────────────────────────────────────────────────
+
         # ── 1. Normalize nutrition ────────────────────────────────────────
         normalized = normalize_nutrition(raw_payload)
 
@@ -103,6 +109,7 @@ def analyze_product_task(self, job_id: str, raw_payload: dict, product_key: str,
             if ocr_result.get("ocr_success") and ocr_result.get("merged_nutrition"):
                 merged_payload = {**raw_payload}
                 merged_payload["nutrition_facts"] = ocr_result["merged_nutrition"]
+                merged_payload["nutrition_unit"]   = "per_100g"  # OCR returns per-100g
 
                 # Use OCR serving size if DOM didn't have one
                 if not dom_serving and ocr_result.get("ocr_serving_size"):
@@ -130,6 +137,9 @@ def analyze_product_task(self, job_id: str, raw_payload: dict, product_key: str,
             contradictions=contradictions,
             vague_claims=vague_claims,
             category=category,
+            fssai=raw_payload.get("fssai"),
+            claims=raw_payload.get("claims", []),
+            serving_size_g=raw_payload.get("serving_size_g"),
         )
 
         # ── 6. Build enriched product ──────────────────────────────────────
@@ -158,7 +168,15 @@ def analyze_product_task(self, job_id: str, raw_payload: dict, product_key: str,
                                       "severity": c["severity"], "citation": c.get("citation")}
                                      for c in contradictions],
             },
-            "scores": scores,
+            "scores": {
+                "value_score":     scores.get("value_score"),
+                "quality_score":   scores.get("quality_score"),
+                "integrity_score": scores.get("integrity_score"),
+                "total":           scores.get("total"),
+                "category":        scores.get("category"),
+                "integrity_notes": scores.get("integrity_notes", []),
+            },
+            "claim_check": scores.get("claim_check", {}),
             "status": "ready",
         }
 
@@ -268,6 +286,32 @@ def _upsert_product(session, raw, normalized, contradictions, vague_claims, scor
     sc.quality_score   = scores.get("quality_score")
     sc.integrity_score = scores.get("integrity_score")
     sc.total           = scores.get("total")
+    sc.category        = scores.get("category")
     sc.computed_at     = now
+
+    # Save claim verification results
+    from models.db_models import ClaimVerification
+    # Clear old verifications for this product
+    session.query(ClaimVerification).filter(
+        ClaimVerification.product_id == product_id
+    ).delete()
+
+    claim_check = scores.get("claim_check", {})
+    for verdict, items in [
+        ("verified",     claim_check.get("verified", [])),
+        ("contradicted", claim_check.get("contradicted", [])),
+        ("unverifiable", claim_check.get("unverifiable", [])),
+    ]:
+        for item in items:
+            session.add(ClaimVerification(
+                product_id  = product_id,
+                claim_text  = item.get("claim", "")[:500],
+                nutrient    = item.get("nutrient"),
+                claimed_val = item.get("claimed"),
+                actual_val  = item.get("actual"),
+                unit        = item.get("unit"),
+                verdict     = verdict,
+                explanation = item.get("explanation"),
+            ))
 
     session.commit()

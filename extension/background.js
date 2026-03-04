@@ -46,6 +46,19 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
       getPageProduct().then(reply);
       return true;
 
+    case "SCROLL_TO_CLAIM":
+      // Forward to content script on the active tab
+      chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+        if (tab?.id) {
+          chrome.tabs.sendMessage(tab.id, {
+            type:         "SCROLL_TO_CLAIM",
+            selector:     msg.selector,
+            elementIndex: msg.elementIndex,
+          });
+        }
+      });
+      return false;
+
     case "ADD_TO_COMPARE":
       handleAddToCompare(msg.platform_id).then(reply);
       return true;
@@ -72,40 +85,137 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
 async function handleProductExtracted(payload) {
   const { platform_id } = payload;
 
-  // Store raw payload
-  // FSSAI already extracted from seller page by content script (DOM-based, reliable)
-  // Only fall back to image OCR if not found
-  const fssai        = payload.fssai       || null;
+  const fssai        = payload.fssai        || null;
   const fssai_status = payload.fssai_status || "not_found";
 
-  await sessionSet(`product:${platform_id}`, {
+  // Merge — amazon.js sends twice: once immediately, once after FSSAI resolves
+  const existing = (await sessionGet(`product:${platform_id}`)) || {};
+  const merged = {
+    ...existing,
     ...payload,
-    fssai,
-    fssai_status,
-    nutrition:  null,
-    nutriscore: null,
-    confidence: "low",
-    status:     "awaiting_scan",
-  });
+    fssai:        fssai || existing.fssai || null,
+    fssai_status: fssai ? "found" : (existing.fssai ? "found" : fssai_status),
+    nutrition:    existing.nutrition  || null,
+    nutriscore:   existing.nutriscore || null,
+    confidence:   existing.confidence || "low",
+    status:       existing.status     || "awaiting_scan",
+  };
 
-  // Notify popup immediately
+  await sessionSet(`product:${platform_id}`, merged);
+
+  // Notify popup
   broadcast({ type: "PAGE_PRODUCT_AVAILABLE", platform_id, preview: {
     platform_id,
     product_name:   payload.product_name,
     brand:          payload.brand,
     price_inr:      payload.price_inr,
     quantity_g:     payload.quantity_g,
-    fssai,
-    fssai_status,
-    status:         "awaiting_scan",
+    fssai:          merged.fssai,
+    fssai_status:   merged.fssai_status,
+    claims:         payload.claims || [],
+    status:         merged.status,
   }});
 
-  // Only run image OCR for FSSAI if seller page didn't have it
-  if (!fssai) {
-    extractFssai(platform_id, payload.ocr_target_urls || []);
-  }
+  // POST to backend — fire and forget
+  // Saves product + all claims to Postgres immediately, regardless of compare
+  postToBackend(payload).catch(e =>
+    console.warn("[NutriLens] Backend POST failed (is backend running?):", e.message)
+  );
 
   return { ok: true };
+}
+
+const BACKEND = "http://localhost:8000/api/v1";
+
+async function postToBackend(payload) {
+  const resp = await fetch(`${BACKEND}/products/submit`, {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      platform:          payload.platform,
+      platform_id:       payload.platform_id,
+      url:               payload.url,
+      product_name:      payload.product_name,
+      brand:             payload.brand,
+      price_inr:         payload.price_inr,
+      quantity_g:        payload.quantity_g,
+      price_per_100g:    payload.price_per_100g,
+      serving_size_g:    payload.serving_size_g,
+      nutrition_facts:   payload.nutrition_facts,
+      claims:            payload.claims || [],
+      claims_text:       payload.claims_text,
+      ingredients_text:  payload.ingredients_text,
+      fssai:             payload.fssai,
+      primary_image_url: payload.primary_image_url,
+      ocr_target_urls:   payload.ocr_target_urls,
+      extraction_method: payload.extraction_method,
+    }),
+  });
+
+  if (!resp.ok) {
+    console.warn("[NutriLens] Backend rejected product:", payload.platform_id, await resp.text());
+    return;
+  }
+
+  const result = await resp.json();
+  console.log("[NutriLens] Saved to backend:", payload.platform_id, `(${(payload.claims||[]).length} claims)`);
+
+  // If cached result returned immediately, merge scores now
+  if (result.cached && result.data) {
+    await mergeBackendScores(payload.platform_id, result.data);
+    return;
+  }
+
+  // Otherwise poll job until complete
+  if (result.job_id) {
+    pollJob(result.job_id, payload.platform_id);
+  }
+}
+
+async function pollJob(jobId, platform_id, attempts = 0) {
+  const MAX_ATTEMPTS = 20;   // 20 × 2s = 40s timeout
+  const INTERVAL_MS  = 2000;
+
+  if (attempts >= MAX_ATTEMPTS) {
+    console.warn("[NutriLens] Job timed out:", jobId);
+    return;
+  }
+
+  await new Promise(r => setTimeout(r, INTERVAL_MS));
+
+  try {
+    const resp = await fetch(`${BACKEND}/jobs/${jobId}`);
+    if (!resp.ok) return;
+
+    const job = await resp.json();
+
+    if (job.status === "complete" && job.data) {
+      console.log("[NutriLens] Job complete — merging scores for", platform_id);
+      await mergeBackendScores(platform_id, job.data);
+    } else if (job.status === "failed") {
+      console.warn("[NutriLens] Job failed:", jobId, job.error);
+    } else {
+      // Still processing — keep polling
+      pollJob(jobId, platform_id, attempts + 1);
+    }
+  } catch (e) {
+    console.warn("[NutriLens] Poll error:", e.message);
+  }
+}
+
+async function mergeBackendScores(platform_id, backendData) {
+  // Merge backend scores/analysis into session product
+  const existing = (await sessionGet(`product:${platform_id}`)) || {};
+  const merged = {
+    ...existing,
+    scores:       backendData.scores       || existing.scores,
+    claim_check:  backendData.claim_check  || existing.claim_check,
+  };
+  await sessionSet(`product:${platform_id}`, merged);
+
+  // Notify popup so it re-renders with scores
+  broadcast({ type: "SCORES_READY", platform_id, scores: backendData.scores, claim_check: backendData.claim_check });
+  console.log("[NutriLens] Scores merged for", platform_id, "total:", backendData.scores?.total);
 }
 
 async function extractFssai(platform_id, imageUrls) {
@@ -288,14 +398,14 @@ async function updateProduct(platform_id, patch) {
 // ─── NutriScore ───────────────────────────────────────────────────────────────
 
 function calcNutriScore(nutrition, servingSize) {
-  const f = servingSize ? (100 / servingSize) : 1;
-
-  const energy  = (nutrition.energy_kcal     || 0) * f;
-  const satFat  = (nutrition.saturated_fat_g || 0) * f;
-  const sugar   = (nutrition.sugar_g         || 0) * f;
-  const sodium  = (nutrition.sodium_mg       || 0) * f;
-  const protein = (nutrition.protein_g       || 0) * f;
-  const fiber   = (nutrition.dietary_fiber_g || 0) * f;
+  // OCR parser extracts per-100g values directly — no normalisation needed.
+  // NutriScore is always calculated on per-100g basis (FSSAI / EU standard).
+  const energy  = nutrition.energy_kcal     || 0;
+  const satFat  = nutrition.saturated_fat_g || 0;
+  const sugar   = nutrition.sugar_g         || 0;
+  const sodium  = nutrition.sodium_mg       || 0;
+  const protein = nutrition.protein_g       || 0;
+  const fiber   = nutrition.dietary_fiber_g || 0;
 
   const neg =
     pts(energy,  [80,160,240,320,400,480,560,640,720,800]) +
