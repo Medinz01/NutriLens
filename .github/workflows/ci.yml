@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Backend: lint + type check ─────────────────────────────────────────────
+  backend:
+    name: Backend (Python)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: nutrilens
+          POSTGRES_PASSWORD: nutrilens_dev
+          POSTGRES_DB: nutrilens_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt ruff mypy
+
+      - name: Lint (ruff)
+        working-directory: backend
+        run: ruff check .
+
+      - name: Type check (mypy)
+        working-directory: backend
+        run: mypy . --ignore-missing-imports --exclude alembic
+        continue-on-error: true   # warnings only until we reach full type coverage
+
+      - name: Run tests
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+asyncpg://nutrilens:nutrilens_dev@localhost:5432/nutrilens_test
+          REDIS_URL: redis://localhost:6379/0
+          CELERY_BROKER_URL: redis://localhost:6379/1
+          CELERY_RESULT_BACKEND: redis://localhost:6379/1
+          OCR_SERVICE_URL: http://localhost:8001
+          APP_ENV: test
+        run: |
+          if [ -d tests ]; then
+            python -m pytest tests/ -v --tb=short
+          else
+            echo "No tests directory yet — skipping"
+          fi
+
+  # ── Extension: build ──────────────────────────────────────────────────────
+  extension:
+    name: Extension (Node)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+
+      - name: Install dependencies
+        working-directory: extension
+        run: npm ci
+
+      - name: Build
+        working-directory: extension
+        run: npm run build
+
+      - name: Check dist was produced
+        run: test -d extension/dist
+
+  # ── OCR service: lint ─────────────────────────────────────────────────────
+  ocr:
+    name: OCR Service (Python)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install lite dependencies (no PaddleOCR in CI)
+        working-directory: ocr-service
+        run: pip install -r requirements.txt ruff
+
+      - name: Lint (ruff)
+        working-directory: ocr-service
+        run: ruff check .
