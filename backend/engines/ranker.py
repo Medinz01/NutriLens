@@ -369,6 +369,25 @@ def compute_score(
     else:
         integrity_notes.append(f"FSSAI verified: {fssai}")
 
+    # Energy cross-check (Codex CAC/GL 2-1985 s3.3.1)
+    # Expected kcal = (protein * 4) + (carbs * 4) + (fat * 9)
+    declared_kcal = n100.get("energy_kcal")
+    _protein      = n100.get("protein_g", 0) or 0
+    _carbs        = n100.get("carbohydrates_g", 0) or 0
+    _fat          = n100.get("total_fat_g", 0) or 0
+
+    if declared_kcal and (_protein or _carbs or _fat):
+        expected_kcal = (_protein * 4) + (_carbs * 4) + (_fat * 9)
+        if expected_kcal > 0:
+            energy_diff = abs(declared_kcal - expected_kcal) / expected_kcal
+            if energy_diff > 0.10:
+                integrity_score -= 1.0
+                integrity_notes.append(
+                    f"Energy mismatch: declared {declared_kcal}kcal, "
+                    f"macro calculation gives {round(expected_kcal)}kcal "
+                    f"({round(energy_diff * 100)}% deviation)"
+                )
+
     # Numeric claim accuracy
     claim_check = {}
     if claims and n100:
