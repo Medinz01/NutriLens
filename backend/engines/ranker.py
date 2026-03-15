@@ -6,55 +6,237 @@ Transparent formula — any brand can verify it.
 
 Score = value_score (35%) + quality_score (30%) + integrity_score (35%)
 
-integrity_score now includes:
-  - FSSAI compliance
-  - Numeric claim accuracy (cross-checked against nutrition label)
-  - Vague/misleading claim penalties (LLM layer — deferred)
+Category-agnostic design:
+  - CATEGORY_PROFILES defines which nutrient matters for value, and which
+    nutrients and thresholds define quality — per category.
+  - Adding a new food category = adding a dict entry, zero code changes.
+  - compute_score() signature is unchanged.
 """
 
 import re
 
-# ─── Category benchmarks ──────────────────────────────────────────────────────
-# protein_per_rs100 = grams of protein per ₹100 spent on the full pack
+# ─── Category profiles ────────────────────────────────────────────────────────
+#
+# value_nutrient    : key from nutrition_per_rs100 used for the value score
+# value_median      : market median for value_nutrient per ₹100 (grams or kcal)
+# quality_base      : starting quality score before rules are applied
+# quality_rules     : list of scoring rules applied in order
+#
+# Each quality rule:
+#   nutrient    — key from nutrition_per_100g
+#   direction   — "more_is_good" | "less_is_good"
+#   mode        — "exclusive"  → only the first (highest) matching threshold fires
+#                 "cumulative" → every matching threshold fires (additive)
+#   thresholds  — list of (value, delta) sorted high → low
 
-BENCHMARKS = {
+CATEGORY_PROFILES = {
     "protein_powder": {
-        "protein_per_rs100_median": 26.0,
-        "sugar_threshold_high":      5.0,
-        "sugar_threshold_ok":        2.0,
-        "protein_per_100g_good":    70.0,
-        "protein_per_100g_ok":      55.0,
+        "value_nutrient": "protein_g",
+        "value_median":   26.0,   # g protein per ₹100 — Indian market median
+        "quality_base":    6.5,
+        "quality_rules": [
+            {
+                "nutrient":   "protein_g",
+                "direction":  "more_is_good",
+                "mode":       "exclusive",
+                "thresholds": [(70.0, +2.0), (55.0, +1.0)],
+            },
+            {
+                "nutrient":   "sugar_g",
+                "direction":  "less_is_good",
+                "mode":       "exclusive",
+                "thresholds": [(5.0, -2.5), (2.0, -1.0)],
+            },
+            {
+                "nutrient":   "saturated_fat_g",
+                "direction":  "less_is_good",
+                "mode":       "exclusive",
+                "thresholds": [(10.0, -1.0)],
+            },
+            {
+                "nutrient":   "sodium_mg",
+                "direction":  "less_is_good",
+                "mode":       "cumulative",
+                "thresholds": [(500.0, -1.0), (300.0, -0.5)],
+            },
+        ],
     },
+
     "health_bar": {
-        "protein_per_rs100_median":  8.0,
-        "sugar_threshold_high":     20.0,
-        "sugar_threshold_ok":       10.0,
-        "protein_per_100g_good":    15.0,
-        "protein_per_100g_ok":       8.0,
+        "value_nutrient": "protein_g",
+        "value_median":    8.0,
+        "quality_base":    6.5,
+        "quality_rules": [
+            {
+                "nutrient":   "protein_g",
+                "direction":  "more_is_good",
+                "mode":       "exclusive",
+                "thresholds": [(15.0, +2.0), (8.0, +1.0)],
+            },
+            {
+                "nutrient":   "sugar_g",
+                "direction":  "less_is_good",
+                "mode":       "exclusive",
+                "thresholds": [(20.0, -2.5), (10.0, -1.0)],
+            },
+            {
+                "nutrient":   "saturated_fat_g",
+                "direction":  "less_is_good",
+                "mode":       "exclusive",
+                "thresholds": [(5.0, -1.0)],
+            },
+            {
+                "nutrient":   "dietary_fiber_g",
+                "direction":  "more_is_good",
+                "mode":       "exclusive",
+                "thresholds": [(5.0, +1.0), (2.0, +0.5)],
+            },
+        ],
     },
+
     "breakfast_cereal": {
-        "protein_per_rs100_median":  4.0,
-        "sugar_threshold_high":     15.0,
-        "sugar_threshold_ok":        5.0,
-        "protein_per_100g_good":    10.0,
-        "protein_per_100g_ok":       5.0,
+        "value_nutrient": "protein_g",
+        "value_median":    4.0,
+        "quality_base":    6.5,
+        "quality_rules": [
+            {
+                "nutrient":   "protein_g",
+                "direction":  "more_is_good",
+                "mode":       "exclusive",
+                "thresholds": [(10.0, +2.0), (5.0, +1.0)],
+            },
+            {
+                "nutrient":   "sugar_g",
+                "direction":  "less_is_good",
+                "mode":       "exclusive",
+                "thresholds": [(15.0, -2.5), (5.0, -1.0)],
+            },
+            {
+                "nutrient":   "dietary_fiber_g",
+                "direction":  "more_is_good",
+                "mode":       "exclusive",
+                "thresholds": [(6.0, +1.5), (3.0, +0.5)],
+            },
+            {
+                "nutrient":   "sodium_mg",
+                "direction":  "less_is_good",
+                "mode":       "cumulative",
+                "thresholds": [(400.0, -1.0), (200.0, -0.5)],
+            },
+        ],
     },
+
+    "cooking_oil": {
+        "value_nutrient": "energy_kcal",
+        "value_median":   900.0,   # kcal per ₹100 — ~= 100g refined oil
+        "quality_base":    7.0,
+        "quality_rules": [
+            {
+                "nutrient":   "saturated_fat_g",
+                "direction":  "less_is_good",
+                "mode":       "exclusive",
+                "thresholds": [(30.0, -2.5), (15.0, -1.0)],
+            },
+            {
+                "nutrient":   "trans_fat_g",
+                "direction":  "less_is_good",
+                "mode":       "exclusive",
+                "thresholds": [(2.0, -2.0), (0.5, -1.0)],
+            },
+        ],
+    },
+
     "general": {
-        "protein_per_rs100_median": 10.0,
-        "sugar_threshold_high":     15.0,
-        "sugar_threshold_ok":        5.0,
-        "protein_per_100g_good":    20.0,
-        "protein_per_100g_ok":      10.0,
+        "value_nutrient": "protein_g",
+        "value_median":   10.0,
+        "quality_base":    6.5,
+        "quality_rules": [
+            {
+                "nutrient":   "protein_g",
+                "direction":  "more_is_good",
+                "mode":       "exclusive",
+                "thresholds": [(20.0, +2.0), (10.0, +1.0)],
+            },
+            {
+                "nutrient":   "sugar_g",
+                "direction":  "less_is_good",
+                "mode":       "exclusive",
+                "thresholds": [(15.0, -2.5), (5.0, -1.0)],
+            },
+            {
+                "nutrient":   "saturated_fat_g",
+                "direction":  "less_is_good",
+                "mode":       "exclusive",
+                "thresholds": [(10.0, -1.0)],
+            },
+            {
+                "nutrient":   "sodium_mg",
+                "direction":  "less_is_good",
+                "mode":       "cumulative",
+                "thresholds": [(500.0, -1.0), (300.0, -0.5)],
+            },
+        ],
     },
 }
 
+# Keep BENCHMARKS as an alias so existing tests that import it don't break
+# Maps old benchmark keys to equivalent profile values for backward compat
+BENCHMARKS = {
+    cat: {
+        "protein_per_rs100_median": p["value_median"],
+        "protein_per_100g_good":    next(
+            (t[0] for r in p["quality_rules"] if r["nutrient"] == "protein_g"
+             and r["direction"] == "more_is_good" for t in [r["thresholds"][0]]), 20.0),
+        "protein_per_100g_ok":      next(
+            (t[0] for r in p["quality_rules"] if r["nutrient"] == "protein_g"
+             and r["direction"] == "more_is_good" and len(r["thresholds"]) > 1
+             for t in [r["thresholds"][1]]), 10.0),
+        "sugar_threshold_high":     next(
+            (t[0] for r in p["quality_rules"] if r["nutrient"] == "sugar_g"
+             for t in [r["thresholds"][0]]), 15.0),
+        "sugar_threshold_ok":       next(
+            (t[0] for r in p["quality_rules"] if r["nutrient"] == "sugar_g"
+             and len(r["thresholds"]) > 1 for t in [r["thresholds"][1]]), 5.0),
+    }
+    for cat, p in CATEGORY_PROFILES.items()
+}
+
+
+# ─── Quality rule evaluator ───────────────────────────────────────────────────
+
+def _apply_quality_rules(n100: dict, rules: list) -> float:
+    """
+    Evaluate all quality rules against per-100g nutrition data.
+    Returns the total delta to apply to quality_base.
+    """
+    delta = 0.0
+    for rule in rules:
+        value = n100.get(rule["nutrient"], 0) or 0
+        direction  = rule["direction"]
+        mode       = rule["mode"]
+        thresholds = rule["thresholds"]  # sorted high → low
+
+        if mode == "exclusive":
+            for threshold, score_delta in thresholds:
+                if direction == "more_is_good" and value >= threshold:
+                    delta += score_delta
+                    break
+                elif direction == "less_is_good" and value > threshold:
+                    delta += score_delta
+                    break
+        elif mode == "cumulative":
+            for threshold, score_delta in thresholds:
+                if direction == "more_is_good" and value >= threshold:
+                    delta += score_delta
+                elif direction == "less_is_good" and value > threshold:
+                    delta += score_delta
+
+    return delta
+
+
 # ─── Numeric claim checker ────────────────────────────────────────────────────
-# Extracts numbers from claim text and cross-checks against nutrition label.
-# E.g. "25g protein per scoop" + serving_size=36g + protein_per_100g=70g
-#      → expected = 70 * 0.36 = 25.2g → matches 25g ✓
 
 CLAIM_NUTRIENT_PATTERNS = [
-    # (nutrient_key, regex to extract claimed value)
     ("protein_g",       re.compile(r"(\d+(?:\.\d+)?)\s*g\s+protein|protein[^,\.]{0,10}?(\d+(?:\.\d+)?)\s*g", re.I)),
     ("energy_kcal",     re.compile(r"(\d+(?:\.\d+)?)\s*kcal|(\d+(?:\.\d+)?)\s*calories", re.I)),
     ("sugar_g",         re.compile(r"(\d+(?:\.\d+)?)\s*g\s+sugar|zero\s+sugar|0\s*g\s+sugar", re.I)),
@@ -63,18 +245,13 @@ CLAIM_NUTRIENT_PATTERNS = [
     ("sodium_mg",       re.compile(r"(\d+(?:\.\d+)?)\s*mg\s+sodium|low\s+sodium", re.I)),
 ]
 
-TOLERANCE = 0.15  # 15% tolerance for rounding / measurement variance
+TOLERANCE = 0.15
+
 
 def check_numeric_claims(claims: list, nutrition_per_100g: dict, serving_size_g: float) -> dict:
     """
     Cross-check numeric claims against nutrition label data.
-
-    Returns:
-        {
-          "verified":     [{"claim": ..., "nutrient": ..., "claimed": ..., "actual": ..., "match": True}],
-          "contradicted": [{"claim": ..., "nutrient": ..., "claimed": ..., "actual": ..., "match": False}],
-          "unverifiable": [{"claim": ..., "reason": ...}]
-        }
+    Returns verified / contradicted / unverifiable buckets.
     """
     if not claims or not nutrition_per_100g:
         return {"verified": [], "contradicted": [], "unverifiable": []}
@@ -87,52 +264,41 @@ def check_numeric_claims(claims: list, nutrition_per_100g: dict, serving_size_g:
         text   = claim.get("text", "") if isinstance(claim, dict) else claim
         source = claim.get("source", "bullet") if isinstance(claim, dict) else "bullet"
         if source == "title":
-            continue  # title claims too broad to check numerically
+            continue
 
-        matched_any = False
         for nutrient_key, pattern in CLAIM_NUTRIENT_PATTERNS:
             m = pattern.search(text)
             if not m:
                 continue
 
-            # Extract the claimed value
-            claimed_val_str = m.group(1) or m.group(2) if m.lastindex and m.lastindex >= 2 else m.group(1) if m.lastindex else None
+            claimed_val_str = (
+                m.group(1) or m.group(2)
+                if m.lastindex and m.lastindex >= 2
+                else m.group(1) if m.lastindex else None
+            )
 
-            # Handle "zero sugar" / "0g sugar" style claims
             if "zero" in text.lower() and nutrient_key == "sugar_g":
                 claimed_val_str = "0"
 
             if claimed_val_str is None:
                 unverifiable.append({"claim": text[:120], "reason": "no numeric value extracted"})
-                matched_any = True
                 break
 
-            claimed_val = float(claimed_val_str)
-
-            # Get actual per-serving value from nutrition data
+            claimed_val     = float(claimed_val_str)
             actual_per_100g = nutrition_per_100g.get(nutrient_key)
+
             if actual_per_100g is None:
                 unverifiable.append({"claim": text[:120], "reason": f"{nutrient_key} not in nutrition data"})
-                matched_any = True
                 break
 
-            # Convert to per-serving if serving size known
-            if serving_size_g and serving_size_g > 0:
-                actual_per_serving = actual_per_100g * (serving_size_g / 100)
-            else:
-                actual_per_serving = actual_per_100g
-
-            # Check within tolerance
-            if actual_per_serving > 0:
-                diff = abs(claimed_val - actual_per_serving) / actual_per_serving
-            else:
-                diff = abs(claimed_val)
+            actual = actual_per_100g * (serving_size_g / 100) if (serving_size_g and serving_size_g > 0) else actual_per_100g
+            diff   = abs(claimed_val - actual) / actual if actual > 0 else abs(claimed_val)
 
             entry = {
                 "claim":    text[:120],
                 "nutrient": nutrient_key,
                 "claimed":  claimed_val,
-                "actual":   round(actual_per_serving, 2),
+                "actual":   round(actual, 2),
                 "unit":     "mg" if "mg" in nutrient_key else "kcal" if "kcal" in nutrient_key else "g",
             }
 
@@ -140,10 +306,8 @@ def check_numeric_claims(claims: list, nutrition_per_100g: dict, serving_size_g:
                 verified.append({**entry, "match": True})
             else:
                 contradicted.append({**entry, "match": False,
-                    "explanation": f"Claimed {claimed_val}, label shows {round(actual_per_serving, 1)}"})
-
-            matched_any = True
-            break  # one nutrient match per claim is enough
+                    "explanation": f"Claimed {claimed_val}, label shows {round(actual, 1)}"})
+            break
 
     return {"verified": verified, "contradicted": contradicted, "unverifiable": unverifiable}
 
@@ -155,20 +319,21 @@ def compute_score(
     nutrition_per_rs100: dict,
     contradictions:      list,
     vague_claims:        list,
-    category:            str  = "general",
-    fssai:               str  = None,
-    claims:              list = None,
+    category:            str   = "general",
+    fssai:               str   = None,
+    claims:              list  = None,
     serving_size_g:      float = None,
 ) -> dict:
     """
     Returns value_score, quality_score, integrity_score, total (all 0–10).
-    Also returns claim_check results for storage.
+    Signature unchanged — drop-in replacement for the previous implementation.
     """
-    n100  = nutrition_per_100g  or {}
-    nrs   = nutrition_per_rs100 or {}
-    bench = BENCHMARKS.get(category, BENCHMARKS["general"])
+    n100    = nutrition_per_100g  or {}
+    nrs     = nutrition_per_rs100 or {}
+    profile = CATEGORY_PROFILES.get(category, CATEGORY_PROFILES["general"])
 
-    if not n100.get("protein_g") and not n100.get("energy_kcal"):
+    # Require at least one meaningful nutrient value to score
+    if not any(n100.get(k) for k in ("protein_g", "energy_kcal", "total_fat_g", "carbohydrates_g")):
         return {
             "value_score":     None,
             "quality_score":   None,
@@ -178,40 +343,26 @@ def compute_score(
             "claim_check":     {},
         }
 
-    # ── 1. Value score (0–10): protein per ₹100 vs category median ───────────
-    protein_per_rs = nrs.get("protein_g", 0) or 0
-    median         = bench["protein_per_rs100_median"]
+    # ── 1. Value score (0–10) ─────────────────────────────────────────────────
+    # How much of the category's key nutrient do you get per ₹100?
+    value_nutrient    = profile["value_nutrient"]
+    value_median      = profile["value_median"]
+    nutrient_per_rs   = nrs.get(value_nutrient, 0) or 0
 
-    if median > 0 and protein_per_rs > 0:
-        value_score = min((protein_per_rs / median) * 5.0, 10.0)
+    if value_median > 0 and nutrient_per_rs > 0:
+        value_score = min((nutrient_per_rs / value_median) * 5.0, 10.0)
     else:
         value_score = 5.0  # no price data — neutral
 
-    # ── 2. Quality score (0–10): nutritional composition ─────────────────────
-    quality_score = 6.5
+    # ── 2. Quality score (0–10) ───────────────────────────────────────────────
+    quality_delta = _apply_quality_rules(n100, profile["quality_rules"])
+    quality_score = round(max(0.0, min(profile["quality_base"] + quality_delta, 10.0)), 1)
 
-    protein = n100.get("protein_g", 0) or 0
-    sugar   = n100.get("sugar_g", 0)   or 0
-    sat_fat = n100.get("saturated_fat_g", 0) or 0
-    sodium  = n100.get("sodium_mg", 0) or 0
-
-    if protein >= bench["protein_per_100g_good"]:  quality_score += 2.0
-    elif protein >= bench["protein_per_100g_ok"]:  quality_score += 1.0
-
-    if sugar   > bench["sugar_threshold_high"]:    quality_score -= 2.5
-    elif sugar > bench["sugar_threshold_ok"]:      quality_score -= 1.0
-
-    if sat_fat > 10:   quality_score -= 1.0
-    if sodium  > 500:  quality_score -= 1.0
-    if sodium  > 300:  quality_score -= 0.5
-
-    quality_score = round(max(0.0, min(quality_score, 10.0)), 1)
-
-    # ── 3. Integrity score (0–10): label honesty & compliance ────────────────
+    # ── 3. Integrity score (0–10) ─────────────────────────────────────────────
     integrity_score = 10.0
     integrity_notes = []
 
-    # FSSAI compliance (-3 if missing, mandatory by law)
+    # FSSAI compliance
     if not fssai:
         integrity_score -= 3.0
         integrity_notes.append("FSSAI license not found")
@@ -221,7 +372,7 @@ def compute_score(
     # Numeric claim accuracy
     claim_check = {}
     if claims and n100:
-        claim_check = check_numeric_claims(claims, n100, serving_size_g or 0)
+        claim_check    = check_numeric_claims(claims, n100, serving_size_g or 0)
         n_contradicted = len(claim_check.get("contradicted", []))
         n_verified     = len(claim_check.get("verified", []))
         if n_contradicted > 0:
@@ -230,12 +381,12 @@ def compute_score(
         if n_verified > 0:
             integrity_notes.append(f"{n_verified} numeric claims verified against label")
 
-    # Rule-based contradictions (existing engine)
+    # Severity-based contradiction deductions
     integrity_score -= 2.5 * len([c for c in contradictions if c.get("severity") == "HIGH"])
     integrity_score -= 1.5 * len([c for c in contradictions if c.get("severity") == "MEDIUM"])
     integrity_score -= 0.5 * len([c for c in contradictions if c.get("severity") == "LOW"])
 
-    # Vague claims penalty (light — LLM will do deeper analysis later)
+    # Vague claims (light penalty — LLM layer will deepen this)
     integrity_score -= 0.2 * len(vague_claims)
 
     integrity_score = round(max(0.0, min(integrity_score, 10.0)), 1)
@@ -254,6 +405,7 @@ def compute_score(
         "integrity_score": round(integrity_score, 1),
         "total":           total,
         "category":        category,
+        "value_nutrient":  value_nutrient,   # tells the popup which nutrient drove value score
         "integrity_notes": integrity_notes,
         "claim_check":     claim_check,
     }

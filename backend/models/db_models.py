@@ -23,7 +23,7 @@ class ClaimType(str, enum.Enum):
     factual     = "FACTUAL"
     certified   = "CERTIFIED"
     vague       = "VAGUE"
-    misleading  = "MISLEADING"  # set by contradiction engine, not classifier
+    misleading  = "MISLEADING"
 
 
 class JobStatus(str, enum.Enum):
@@ -33,12 +33,12 @@ class JobStatus(str, enum.Enum):
     failed     = "failed"
 
 
-# ─── Products ────────────────────────────────────────────────────────────────
+# ─── Products ─────────────────────────────────────────────────────────────────
 
 class Product(Base):
     __tablename__ = "products"
 
-    id                = Column(String, primary_key=True)  # "{platform}:{platform_id}"
+    id                = Column(String, primary_key=True)
     platform_id       = Column(String, nullable=False, index=True)
     platform_name     = Column(String, nullable=False)
     product_name      = Column(String)
@@ -48,36 +48,36 @@ class Product(Base):
     created_at        = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     last_extracted_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
-    # Relationships
-    nutrition_facts = relationship("NutritionFacts", back_populates="product", uselist=False,
-                                   cascade="all, delete-orphan")
+    nutrition_facts  = relationship("NutritionFacts", back_populates="product", uselist=False,
+                                    cascade="all, delete-orphan")
     extracted_claims = relationship("ExtractedClaim", back_populates="product",
                                     cascade="all, delete-orphan")
-    contradictions  = relationship("Contradiction", back_populates="product",
-                                   cascade="all, delete-orphan")
-    scores          = relationship("ProductScore", back_populates="product", uselist=False,
-                                   cascade="all, delete-orphan")
+    contradictions   = relationship("Contradiction", back_populates="product",
+                                    cascade="all, delete-orphan")
+    scores           = relationship("ProductScore", back_populates="product", uselist=False,
+                                    cascade="all, delete-orphan")
 
 
 class NutritionFacts(Base):
     __tablename__ = "nutrition_facts"
 
-    id              = Column(Integer, primary_key=True, autoincrement=True)
-    product_id      = Column(String, ForeignKey("products.id", ondelete="CASCADE"), unique=True)
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    product_id     = Column(String, ForeignKey("products.id", ondelete="CASCADE"), unique=True)
 
     # Pricing
-    price_inr       = Column(Float)
-    quantity_g      = Column(Float)
-    price_per_100g  = Column(Float)
+    price_inr      = Column(Float)
+    quantity_g     = Column(Float)
+    price_per_100g = Column(Float)
 
     # Per serving (as listed)
-    serving_size_g  = Column(Float)
+    serving_size_g = Column(Float)
 
     # Per 100g (normalized — primary comparison unit)
     energy_kcal     = Column(Float)
     protein_g       = Column(Float)
     total_fat_g     = Column(Float)
     saturated_fat_g = Column(Float)
+    trans_fat_g     = Column(Float)
     carbohydrates_g = Column(Float)
     sugar_g         = Column(Float)
     dietary_fiber_g = Column(Float)
@@ -86,13 +86,13 @@ class NutritionFacts(Base):
     calcium_mg      = Column(Float)
     iron_mg         = Column(Float)
 
-    # Per ₹100 (value metric)
-    protein_per_rs100    = Column(Float)
-    energy_per_rs100     = Column(Float)
+    # Per ₹100 — all nutrients, keyed by nutrient name.
+    # Which fields are meaningful depends on category (e.g. cooking_oil uses energy_kcal).
+    per_rs100_json  = Column(JSONB, default=dict)
 
     # Data quality
     source           = Column(SAEnum(ExtractionSource), default=ExtractionSource.extension_dom)
-    confidence       = Column(Float, default=0.5)   # 0.0–1.0
+    confidence       = Column(Float, default=0.5)
     extraction_notes = Column(Text)
 
     product = relationship("Product", back_populates="nutrition_facts")
@@ -118,8 +118,8 @@ class Contradiction(Base):
     id           = Column(Integer, primary_key=True, autoincrement=True)
     product_id   = Column(String, ForeignKey("products.id", ondelete="CASCADE"))
     claim_text   = Column(Text)
-    rule_id      = Column(String)           # FK to fssai_rules.id
-    severity     = Column(String)           # HIGH / MEDIUM / LOW
+    rule_id      = Column(String)
+    severity     = Column(String)
     explanation  = Column(Text)
     citation_url = Column(Text)
 
@@ -131,28 +131,28 @@ class ProductScore(Base):
 
     id              = Column(Integer, primary_key=True, autoincrement=True)
     product_id      = Column(String, ForeignKey("products.id", ondelete="CASCADE"), unique=True)
-    category        = Column(String)           # protein_powder, health_bar, etc.
-    value_score     = Column(Float)            # protein/₹
-    quality_score   = Column(Float)            # nutritional quality
-    integrity_score = Column(Float)            # label integrity
-    total           = Column(Float)            # weighted sum 0–10
+    category        = Column(String)
+    value_nutrient  = Column(String)   # which nutrient drove the value score (e.g. protein_g)
+    value_score     = Column(Float)
+    quality_score   = Column(Float)
+    integrity_score = Column(Float)
+    total           = Column(Float)
     computed_at     = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     product = relationship("Product", back_populates="scores")
 
 
 class ClaimVerification(Base):
-    """Stores per-claim numeric verification results from ranker.py."""
     __tablename__ = "claim_verifications"
 
     id          = Column(Integer, primary_key=True, autoincrement=True)
     product_id  = Column(String, ForeignKey("products.id", ondelete="CASCADE"), index=True)
     claim_text  = Column(Text, nullable=False)
-    nutrient    = Column(String)            # protein_g, sugar_g, etc.
+    nutrient    = Column(String)
     claimed_val = Column(Float)
     actual_val  = Column(Float)
     unit        = Column(String)
-    verdict     = Column(String)            # verified | contradicted | unverifiable
+    verdict     = Column(String)
     explanation = Column(Text)
     created_at  = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
@@ -162,7 +162,7 @@ class ClaimVerification(Base):
 class AnalysisJob(Base):
     __tablename__ = "analysis_jobs"
 
-    id          = Column(String, primary_key=True)   # UUID
+    id          = Column(String, primary_key=True)
     product_id  = Column(String, index=True)
     status      = Column(SAEnum(JobStatus), default=JobStatus.queued)
     eta_seconds = Column(Integer, default=10)

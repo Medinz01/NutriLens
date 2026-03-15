@@ -10,6 +10,7 @@ class NutritionFactsInput(BaseModel):
     protein_g:        Optional[float] = None
     total_fat_g:      Optional[float] = None
     saturated_fat_g:  Optional[float] = None
+    trans_fat_g:      Optional[float] = None
     carbohydrates_g:  Optional[float] = None
     sugar_g:          Optional[float] = None
     dietary_fiber_g:  Optional[float] = None
@@ -44,7 +45,7 @@ class ProductSubmitRequest(BaseModel):
     serving_size_g:  Optional[float] = None
     nutrition_facts: Optional[NutritionFactsInput] = None
 
-    # Claims — structured array from DOM bullets
+    # Claims
     claims:           Optional[list[ClaimInput]] = []
     claims_text:      Optional[str] = Field(None, max_length=5000)
     ingredients_text: Optional[str] = Field(None, max_length=2000)
@@ -80,10 +81,10 @@ class ContradictionResult(BaseModel):
 
 
 class AnalysisResult(BaseModel):
-    factual_claims:  list[ClaimResult] = []
+    factual_claims:   list[ClaimResult] = []
     certified_claims: list[ClaimResult] = []
-    vague_claims:    list[ClaimResult] = []
-    contradictions:  list[ContradictionResult] = []
+    vague_claims:     list[ClaimResult] = []
+    contradictions:   list[ContradictionResult] = []
 
 
 class ScoreResult(BaseModel):
@@ -91,7 +92,8 @@ class ScoreResult(BaseModel):
     quality_score:   Optional[float] = None
     integrity_score: Optional[float] = None
     total:           Optional[float] = None
-    category:        Optional[str] = None
+    category:        Optional[str]   = None
+    value_nutrient:  Optional[str]   = None   # which nutrient drove the value score
 
 
 class NutritionPer100g(BaseModel):
@@ -99,6 +101,7 @@ class NutritionPer100g(BaseModel):
     protein_g:        Optional[float] = None
     total_fat_g:      Optional[float] = None
     saturated_fat_g:  Optional[float] = None
+    trans_fat_g:      Optional[float] = None
     carbohydrates_g:  Optional[float] = None
     sugar_g:          Optional[float] = None
     dietary_fiber_g:  Optional[float] = None
@@ -108,44 +111,56 @@ class NutritionPer100g(BaseModel):
     iron_mg:          Optional[float] = None
 
 
+# Mirrors NutritionPer100g — all nutrients expressed per ₹100 spent on the pack.
+# Which ones have meaningful values depends on category (e.g. cooking_oil uses energy_kcal).
 class NutritionPerRs100(BaseModel):
-    protein_g:   Optional[float] = None
-    energy_kcal: Optional[float] = None
+    energy_kcal:      Optional[float] = None
+    protein_g:        Optional[float] = None
+    total_fat_g:      Optional[float] = None
+    saturated_fat_g:  Optional[float] = None
+    trans_fat_g:      Optional[float] = None
+    carbohydrates_g:  Optional[float] = None
+    sugar_g:          Optional[float] = None
+    dietary_fiber_g:  Optional[float] = None
+    sodium_mg:        Optional[float] = None
+    cholesterol_mg:   Optional[float] = None
+    calcium_mg:       Optional[float] = None
+    iron_mg:          Optional[float] = None
 
 
 class EnrichedProduct(BaseModel):
-    platform_id:       str
-    platform:          str
-    url:               str
-    product_name:      Optional[str] = None
-    brand:             Optional[str] = None
-    price_inr:         Optional[float] = None
-    quantity_g:        Optional[float] = None
-    price_per_100g:    Optional[float] = None
-    serving_size_g:    Optional[float] = None
-    nutrition_per_100g:    Optional[NutritionPer100g] = None
+    platform_id:           str
+    platform:              str
+    url:                   str
+    product_name:          Optional[str]   = None
+    brand:                 Optional[str]   = None
+    price_inr:             Optional[float] = None
+    quantity_g:            Optional[float] = None
+    price_per_100g:        Optional[float] = None
+    serving_size_g:        Optional[float] = None
+    nutrition_per_100g:    Optional[NutritionPer100g]  = None
     nutrition_per_rs100:   Optional[NutritionPerRs100] = None
-    analysis:          Optional[AnalysisResult] = None
-    scores:            Optional[ScoreResult] = None
-    nutrition_confidence:  Optional[str] = None
-    extraction_method:     Optional[str] = None
-    status:            str = "ready"
+    analysis:              Optional[AnalysisResult]    = None
+    scores:                Optional[ScoreResult]       = None
+    nutrition_confidence:  Optional[str]   = None
+    extraction_method:     Optional[str]   = None
+    status:                str = "ready"
 
 
 # ─── Job / Polling ────────────────────────────────────────────────────────────
 
 class SubmitResponse(BaseModel):
-    cached:     bool
-    job_id:     Optional[str] = None
-    data:       Optional[EnrichedProduct] = None
-    eta_seconds: Optional[int] = None
+    cached:      bool
+    job_id:      Optional[str]            = None
+    data:        Optional[EnrichedProduct] = None
+    eta_seconds: Optional[int]            = None
 
 
 class JobStatusResponse(BaseModel):
     status:      str   # queued | processing | complete | failed
-    eta_seconds: Optional[int] = None
+    eta_seconds: Optional[int]            = None
     data:        Optional[EnrichedProduct] = None
-    error:       Optional[str] = None
+    error:       Optional[str]            = None
 
 
 # ─── Rank ─────────────────────────────────────────────────────────────────────
@@ -155,9 +170,9 @@ class RankRequest(BaseModel):
 
 
 class RankedProduct(BaseModel):
-    platform_id: str
-    rank: int
-    score: float
+    platform_id:  str
+    rank:         int
+    score:        float
     product_name: Optional[str] = None
 
 

@@ -259,8 +259,7 @@ def _upsert_product(session, raw, normalized, contradictions, vague_claims, scor
     nf.sugar_g           = per100g.get("sugar_g")
     nf.dietary_fiber_g   = per100g.get("dietary_fiber_g")
     nf.sodium_mg         = per100g.get("sodium_mg")
-    nf.protein_per_rs100 = per_rs.get("protein_g")
-    nf.energy_per_rs100  = per_rs.get("energy_kcal")
+    nf.per_rs100_json    = per_rs or {}
     nf.confidence        = 0.7 if raw.get("nutrition_confidence") == "high" else 0.4
 
     # Delete old contradictions and re-insert fresh ones
