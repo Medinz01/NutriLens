@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     # Leave empty to run rule-based only (graceful fallback)
     groq_api_key: str = ""
 
+    # Admin dashboard
+    # Set to true in production to disable truncate/delete/flush operations
+    admin_read_only: bool = False
+
     # App
     env:                  str = "development"
     cache_ttl_seconds:    int = 60 * 60 * 24 * 60   # 60 days
