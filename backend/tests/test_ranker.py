@@ -144,12 +144,17 @@ class TestQualityScore:
 
 
 class TestIntegrityScore:
-    """Tests for integrity_score (FSSAI, contradictions)"""
+    """Tests for integrity_score (FSSAI, contradictions)
+
+    energy_kcal=320 = protein_g(80) * 4 kcal/g — consistent with macro
+    calculation so the energy cross-check does not fire in these tests.
+    Tests that DO want to verify the energy check are in TestEnergyCheck.
+    """
 
     def test_integrity_score_no_fssai(self):
         """Missing FSSAI should deduct -3.0"""
         result = compute_score(
-            nutrition_per_100g={"protein_g": 80.0, "energy_kcal": 400},
+            nutrition_per_100g={"protein_g": 80.0, "energy_kcal": 320},
             nutrition_per_rs100={"protein_g": 26.0},
             contradictions=[],
             vague_claims=[],
@@ -162,7 +167,7 @@ class TestIntegrityScore:
     def test_integrity_score_with_fssai(self):
         """FSSAI present should keep full score"""
         result = compute_score(
-            nutrition_per_100g={"protein_g": 80.0, "energy_kcal": 400},
+            nutrition_per_100g={"protein_g": 80.0, "energy_kcal": 320},
             nutrition_per_rs100={"protein_g": 26.0},
             contradictions=[],
             vague_claims=[],
@@ -174,7 +179,7 @@ class TestIntegrityScore:
     def test_integrity_score_contradiction_high(self):
         """HIGH severity contradiction should deduct -2.5"""
         result = compute_score(
-            nutrition_per_100g={"protein_g": 80.0, "energy_kcal": 400},
+            nutrition_per_100g={"protein_g": 80.0, "energy_kcal": 320},
             nutrition_per_rs100={"protein_g": 26.0},
             contradictions=[{"severity": "HIGH"}],
             vague_claims=[],
@@ -187,7 +192,7 @@ class TestIntegrityScore:
     def test_integrity_score_contradiction_medium(self):
         """MEDIUM severity contradiction should deduct -1.5"""
         result = compute_score(
-            nutrition_per_100g={"protein_g": 80.0, "energy_kcal": 400},
+            nutrition_per_100g={"protein_g": 80.0, "energy_kcal": 320},
             nutrition_per_rs100={"protein_g": 26.0},
             contradictions=[{"severity": "MEDIUM"}],
             vague_claims=[],
@@ -200,7 +205,7 @@ class TestIntegrityScore:
     def test_integrity_score_contradiction_low(self):
         """LOW severity contradiction should deduct -0.5"""
         result = compute_score(
-            nutrition_per_100g={"protein_g": 80.0, "energy_kcal": 400},
+            nutrition_per_100g={"protein_g": 80.0, "energy_kcal": 320},
             nutrition_per_rs100={"protein_g": 26.0},
             contradictions=[{"severity": "LOW"}],
             vague_claims=[],
@@ -213,7 +218,7 @@ class TestIntegrityScore:
     def test_integrity_score_multiple_contradictions(self):
         """Multiple HIGH contradictions each deduct 2.5"""
         result = compute_score(
-            nutrition_per_100g={"protein_g": 80.0, "energy_kcal": 400},
+            nutrition_per_100g={"protein_g": 80.0, "energy_kcal": 320},
             nutrition_per_rs100={"protein_g": 26.0},
             contradictions=[{"severity": "HIGH"}, {"severity": "HIGH"}],
             vague_claims=[],
@@ -226,7 +231,7 @@ class TestIntegrityScore:
     def test_integrity_score_vague_claims(self):
         """Vague claims should deduct -0.2 each"""
         result = compute_score(
-            nutrition_per_100g={"protein_g": 80.0, "energy_kcal": 400},
+            nutrition_per_100g={"protein_g": 80.0, "energy_kcal": 320},
             nutrition_per_rs100={"protein_g": 26.0},
             contradictions=[],
             vague_claims=[{}, {}, {}, {}, {}],  # 5 vague claims
@@ -237,13 +242,60 @@ class TestIntegrityScore:
         assert result["integrity_score"] == 9.0
 
 
+class TestEnergyCheck:
+    """Tests for Codex s3.3.1 energy cross-verification"""
+
+    def test_energy_check_accurate_label_no_penalty(self):
+        """Accurate energy declaration should not trigger penalty"""
+        result = compute_score(
+            # protein=70*4=280, carbs=21.2*4=84.8, fat=3.25*9=29.25 → 394 kcal
+            nutrition_per_100g={"protein_g": 70.0, "carbohydrates_g": 21.2,
+                                "total_fat_g": 3.25, "energy_kcal": 394},
+            nutrition_per_rs100={"protein_g": 26.0},
+            contradictions=[],
+            vague_claims=[],
+            category="protein_powder",
+            fssai="11223344556677",
+        )
+        assert result["integrity_score"] == 10.0
+        assert not any("mismatch" in n for n in result["integrity_notes"])
+
+    def test_energy_check_inaccurate_label_deducts_1(self):
+        """Energy >10% off from macro calculation should deduct -1.0"""
+        result = compute_score(
+            # macros give ~394 kcal but label declares 500
+            nutrition_per_100g={"protein_g": 70.0, "carbohydrates_g": 21.2,
+                                "total_fat_g": 3.25, "energy_kcal": 500},
+            nutrition_per_rs100={"protein_g": 26.0},
+            contradictions=[],
+            vague_claims=[],
+            category="protein_powder",
+            fssai="11223344556677",
+        )
+        assert result["integrity_score"] == 9.0
+        assert any("mismatch" in n for n in result["integrity_notes"])
+
+    def test_energy_check_no_declared_kcal_skipped(self):
+        """Missing energy_kcal should skip the check silently"""
+        result = compute_score(
+            nutrition_per_100g={"protein_g": 70.0, "carbohydrates_g": 21.2, "total_fat_g": 3.25},
+            nutrition_per_rs100={"protein_g": 26.0},
+            contradictions=[],
+            vague_claims=[],
+            category="protein_powder",
+            fssai="11223344556677",
+        )
+        assert result["integrity_score"] == 10.0
+
+
 class TestTotalScore:
     """Tests for total score (weighted sum capped 0-10)"""
 
     def test_total_score_calculation(self):
         """Total should be weighted sum: value*0.35 + quality*0.30 + integrity*0.35"""
         result = compute_score(
-            nutrition_per_100g={"protein_g": 80.0, "energy_kcal": 400, "sugar_g": 1.0},
+            # energy_kcal=320 = protein(80)*4, no carbs/fat so cross-check won't fire
+            nutrition_per_100g={"protein_g": 80.0, "energy_kcal": 320, "sugar_g": 1.0},
             nutrition_per_rs100={"protein_g": 26.0},  # exactly median -> 5.0 value
             contradictions=[],
             vague_claims=[],
@@ -262,9 +314,8 @@ class TestTotalScore:
             contradictions=[{"severity": "HIGH"}, {"severity": "HIGH"}, {"severity": "HIGH"}],
             vague_claims=[],
             category="protein_powder",
-            fssai=None,  # -3
+            fssai=None,
         )
-        # Should be capped at 0
         assert result["total"] >= 0.0
 
 
