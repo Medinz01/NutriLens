@@ -3,13 +3,16 @@ worker/celery_app.py
 
 Celery setup + the core analysis task.
 
-Right now the pipeline is a placeholder that:
-  1. Normalizes nutrition data
-  2. Runs the rule-based contradiction engine (no ML yet)
-  3. Computes a basic score
-  4. Writes to Postgres + Redis cache
-
-Phase 4 will slot in the spaCy NER and BERT classifier here.
+Pipeline:
+  1. Normalize nutrition facts to per-100g and per-₹100
+  2. OCR pipeline (PaddleOCR microservice)
+  3. Detect category (protein_powder, health_bar, etc.)
+  4. Rule-based contradiction engine (FSSAI regulations)
+  4b. LLM claim intelligence (Groq — Phase 7)
+  5. Compute accountability score
+  6. Persist to Postgres
+  7. Write to Redis cache
+  8. Update job status
 """
 
 import sys
@@ -18,7 +21,6 @@ import os
 # Ensure /app is on the path for forked worker subprocesses
 sys.path.insert(0, "/app")
 
-import uuid
 import json
 import logging
 from celery import Celery
@@ -46,22 +48,13 @@ celery_app.conf.update(
 @celery_app.task(bind=True, name="analyze_product", max_retries=2)
 def analyze_product_task(self, job_id: str, raw_payload: dict, product_key: str, refresh: bool = False):
     """
-    Main ML pipeline task. Runs synchronously inside Celery worker.
-
-    Stages:
-      1. Normalize nutrition facts to per-100g and per-₹100
-      2. Detect category (protein_powder, health_bar, etc.)
-      3. Run contradiction engine (rule-based)
-      4. [Phase 4] Claim extraction + classification (spaCy + BERT)
-      5. Compute NutriScore
-      6. Persist to Postgres
-      7. Write to Redis cache
-      8. Update job status
+    Main analysis pipeline task. Runs synchronously inside Celery worker.
     """
     import redis as sync_redis
     from sqlalchemy.orm import Session
     from database import sync_engine
     from engines.contradiction import run_contradiction_engine
+    from engines.llm_claims import analyse_claims_with_llm, merge_llm_into_analysis
     from engines.ranker import compute_score
     from engines.normalizer import normalize_nutrition
     from engines.ocr import process_product_images
@@ -77,18 +70,17 @@ def analyze_product_task(self, job_id: str, raw_payload: dict, product_key: str,
         r.setex(job_key, 86400, json.dumps(payload))
 
     try:
-        update_job("processing", eta=8)
+        update_job("processing", eta=10)
 
         platform    = raw_payload.get("platform", "").replace("https://www.", "").replace("/", "")
         platform_id = raw_payload.get("platform_id", "")
 
-        # ── DEBUG ─────────────────────────────────────────────────────────
-        ocr_urls_debug = raw_payload.get("ocr_target_urls")
-        logger.info(f"[worker] ocr_target_urls received: {ocr_urls_debug}")
+        # ── DEBUG ──────────────────────────────────────────────────────────
+        logger.info(f"[worker] ocr_target_urls received: {raw_payload.get('ocr_target_urls')}")
         logger.info(f"[worker] nutrition_facts received: {raw_payload.get('nutrition_facts')}")
-        # ── END DEBUG ─────────────────────────────────────────────────────
+        # ── END DEBUG ──────────────────────────────────────────────────────
 
-        # ── 1. Normalize nutrition ────────────────────────────────────────
+        # ── 1. Normalize nutrition ─────────────────────────────────────────
         normalized = normalize_nutrition(raw_payload)
 
         # ── 2. OCR Pipeline ───────────────────────────────────────────────
@@ -105,30 +97,51 @@ def analyze_product_task(self, job_id: str, raw_payload: dict, product_key: str,
                 dom_serving_size=dom_serving,
             )
 
-            # If OCR found better nutrition, re-normalize with merged data
             if ocr_result.get("ocr_success") and ocr_result.get("merged_nutrition"):
                 merged_payload = {**raw_payload}
                 merged_payload["nutrition_facts"] = ocr_result["merged_nutrition"]
-                merged_payload["nutrition_unit"]   = "per_100g"  # OCR returns per-100g
+                merged_payload["nutrition_unit"]   = "per_100g"
 
-                # Use OCR serving size if DOM didn't have one
                 if not dom_serving and ocr_result.get("ocr_serving_size"):
                     merged_payload["serving_size_g"] = ocr_result["ocr_serving_size"]
 
-                # Use OCR ingredients if DOM didn't have them
                 if not raw_payload.get("ingredients_text") and ocr_result.get("ocr_ingredients"):
                     merged_payload["ingredients_text"] = ocr_result["ocr_ingredients"]
 
                 normalized = normalize_nutrition(merged_payload)
 
         # ── 3. Category detection ─────────────────────────────────────────
-        category = detect_category(raw_payload.get("product_name", ""),
-                                   raw_payload.get("claims_text", ""))
+        category = detect_category(
+            raw_payload.get("product_name", ""),
+            raw_payload.get("claims_text", ""),
+        )
 
-        # ── 4. Contradiction engine ────────────────────────────────────────
-        claims_text  = raw_payload.get("claims_text", "")
-        nutrition    = normalized.get("per_100g", {})
-        contradictions, vague_claims = run_contradiction_engine(claims_text, nutrition)
+        # ── 4. Rule-based contradiction engine ────────────────────────────
+        claims_text = raw_payload.get("claims_text", "")
+        claims_list = raw_payload.get("claims", [])
+        nutrition   = normalized.get("per_100g", {})
+
+        rule_contradictions, rule_vague = run_contradiction_engine(claims_text, nutrition)
+
+        # ── 4b. LLM claim intelligence (Phase 7) ─────────────────────────
+        llm_result = analyse_claims_with_llm(
+            claims=claims_list,
+            nutrition_per_100g=nutrition,
+            category=category,
+            groq_api_key=settings.groq_api_key,
+        )
+
+        contradictions, vague_claims, factual_claims, certified_claims = merge_llm_into_analysis(
+            rule_contradictions=rule_contradictions,
+            rule_vague=rule_vague,
+            llm_result=llm_result,
+        )
+
+        logger.info(
+            f"[worker] Claims: {len(contradictions)} contradictions, "
+            f"{len(vague_claims)} vague, {len(factual_claims)} factual, "
+            f"{len(certified_claims)} certified | llm_used={llm_result.get('llm_used')}"
+        )
 
         # ── 5. Score ──────────────────────────────────────────────────────
         scores = compute_score(
@@ -138,19 +151,19 @@ def analyze_product_task(self, job_id: str, raw_payload: dict, product_key: str,
             vague_claims=vague_claims,
             category=category,
             fssai=raw_payload.get("fssai"),
-            claims=raw_payload.get("claims", []),
+            claims=claims_list,
             serving_size_g=raw_payload.get("serving_size_g"),
         )
 
         # ── 6. Build enriched product ──────────────────────────────────────
         enriched = {
-            "platform_id":   platform_id,
-            "platform":      platform,
-            "url":           raw_payload.get("url", ""),
-            "product_name":  raw_payload.get("product_name"),
-            "brand":         raw_payload.get("brand"),
-            "price_inr":     raw_payload.get("price_inr"),
-            "quantity_g":    raw_payload.get("quantity_g"),
+            "platform_id":    platform_id,
+            "platform":       platform,
+            "url":            raw_payload.get("url", ""),
+            "product_name":   raw_payload.get("product_name"),
+            "brand":          raw_payload.get("brand"),
+            "price_inr":      raw_payload.get("price_inr"),
+            "quantity_g":     raw_payload.get("quantity_g"),
             "price_per_100g": normalized.get("price_per_100g"),
             "serving_size_g": raw_payload.get("serving_size_g"),
             "nutrition_per_100g":  normalized.get("per_100g"),
@@ -160,13 +173,15 @@ def analyze_product_task(self, job_id: str, raw_payload: dict, product_key: str,
             "fssai_number":         ocr_result.get("fssai_number"),
             "ocr_conflicts":        ocr_result.get("conflicts", []),
             "analysis": {
-                "factual_claims":   [],
-                "certified_claims": [],
+                "factual_claims":   factual_claims,
+                "certified_claims": certified_claims,
                 "vague_claims":     [{"claim": c["claim"], "type": "VAGUE", "reason": c["reason"]}
                                      for c in vague_claims],
                 "contradictions":   [{"claim": c["claim"], "explanation": c["explanation"],
                                       "severity": c["severity"], "citation": c.get("citation")}
                                      for c in contradictions],
+                "llm_assessment":   llm_result.get("overall_assessment"),
+                "llm_used":         llm_result.get("llm_used", False),
             },
             "scores": {
                 "value_score":     scores.get("value_score"),
@@ -174,21 +189,22 @@ def analyze_product_task(self, job_id: str, raw_payload: dict, product_key: str,
                 "integrity_score": scores.get("integrity_score"),
                 "total":           scores.get("total"),
                 "category":        scores.get("category"),
+                "value_nutrient":  scores.get("value_nutrient"),
                 "integrity_notes": scores.get("integrity_notes", []),
             },
             "claim_check": scores.get("claim_check", {}),
             "status": "ready",
         }
 
-        # ── 6. Persist to Postgres ─────────────────────────────────────────
+        # ── 7. Persist to Postgres ─────────────────────────────────────────
         with Session(sync_engine) as session:
             _upsert_product(session, raw_payload, normalized, contradictions, vague_claims, scores)
 
-        # ── 7. Write to Redis cache ────────────────────────────────────────
+        # ── 8. Write to Redis cache ────────────────────────────────────────
         cache_key = f"product:{platform}:{platform_id}"
         r.setex(cache_key, settings.cache_ttl_seconds, json.dumps(enriched))
 
-        # ── 8. Mark job complete ───────────────────────────────────────────
+        # ── 9. Mark job complete ───────────────────────────────────────────
         update_job("complete", data=enriched)
         logger.info(f"[worker] Job {job_id} complete for {product_key}")
 
@@ -198,16 +214,17 @@ def analyze_product_task(self, job_id: str, raw_payload: dict, product_key: str,
         raise self.retry(exc=exc, countdown=5)
 
 
-# ─── Category detection (simple keyword heuristic for now) ──────────────────
+# ─── Category detection ───────────────────────────────────────────────────────
 
 CATEGORY_KEYWORDS = {
-    "protein_powder":  ["whey", "protein powder", "casein", "isolate", "mass gainer", "creapure", "creatine"],
-    "health_bar":      ["protein bar", "energy bar", "granola bar", "nutrition bar"],
-    "breakfast_cereal":["oats", "muesli", "cornflakes", "cereal", "porridge"],
+    "protein_powder":   ["whey", "protein powder", "casein", "isolate", "mass gainer", "creapure", "creatine"],
+    "health_bar":       ["protein bar", "energy bar", "granola bar", "nutrition bar"],
+    "breakfast_cereal": ["oats", "muesli", "cornflakes", "cereal", "porridge"],
+    "cooking_oil":      ["cooking oil", "sunflower oil", "olive oil", "coconut oil", "mustard oil", "refined oil"],
 }
 
 def detect_category(product_name: str, claims_text: str) -> str:
-    combined = (product_name + " " + claims_text).lower()
+    combined = ((product_name or "") + " " + (claims_text or "")).lower()
     for category, keywords in CATEGORY_KEYWORDS.items():
         if any(kw in combined for kw in keywords):
             return category
@@ -238,8 +255,8 @@ def _upsert_product(session, raw, normalized, contradictions, vague_claims, scor
     product.last_extracted_at = now
 
     # Upsert nutrition facts
-    per100g  = normalized.get("per_100g", {}) or {}
-    per_rs   = normalized.get("per_rs100", {}) or {}
+    per100g = normalized.get("per_100g", {}) or {}
+    per_rs  = normalized.get("per_rs100", {}) or {}
 
     if product.nutrition_facts:
         nf = product.nutrition_facts
@@ -247,22 +264,22 @@ def _upsert_product(session, raw, normalized, contradictions, vague_claims, scor
         nf = NutritionFacts(product_id=product_id)
         session.add(nf)
 
-    nf.price_inr         = raw.get("price_inr")
-    nf.quantity_g        = raw.get("quantity_g")
-    nf.price_per_100g    = normalized.get("price_per_100g")
-    nf.serving_size_g    = raw.get("serving_size_g")
-    nf.energy_kcal       = per100g.get("energy_kcal")
-    nf.protein_g         = per100g.get("protein_g")
-    nf.total_fat_g       = per100g.get("total_fat_g")
-    nf.saturated_fat_g   = per100g.get("saturated_fat_g")
-    nf.carbohydrates_g   = per100g.get("carbohydrates_g")
-    nf.sugar_g           = per100g.get("sugar_g")
-    nf.dietary_fiber_g   = per100g.get("dietary_fiber_g")
-    nf.sodium_mg         = per100g.get("sodium_mg")
-    nf.per_rs100_json    = per_rs or {}
-    nf.confidence        = 0.7 if raw.get("nutrition_confidence") == "high" else 0.4
+    nf.price_inr       = raw.get("price_inr")
+    nf.quantity_g      = raw.get("quantity_g")
+    nf.price_per_100g  = normalized.get("price_per_100g")
+    nf.serving_size_g  = raw.get("serving_size_g")
+    nf.energy_kcal     = per100g.get("energy_kcal")
+    nf.protein_g       = per100g.get("protein_g")
+    nf.total_fat_g     = per100g.get("total_fat_g")
+    nf.saturated_fat_g = per100g.get("saturated_fat_g")
+    nf.carbohydrates_g = per100g.get("carbohydrates_g")
+    nf.sugar_g         = per100g.get("sugar_g")
+    nf.dietary_fiber_g = per100g.get("dietary_fiber_g")
+    nf.sodium_mg       = per100g.get("sodium_mg")
+    nf.per_rs100_json  = per_rs or {}
+    nf.confidence      = 0.7 if raw.get("nutrition_confidence") == "high" else 0.4
 
-    # Delete old contradictions and re-insert fresh ones
+    # Delete old contradictions and re-insert
     for c in list(product.contradictions):
         session.delete(c)
     for c in contradictions:
@@ -290,7 +307,6 @@ def _upsert_product(session, raw, normalized, contradictions, vague_claims, scor
 
     # Save claim verification results
     from models.db_models import ClaimVerification
-    # Clear old verifications for this product
     session.query(ClaimVerification).filter(
         ClaimVerification.product_id == product_id
     ).delete()
