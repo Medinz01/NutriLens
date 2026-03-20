@@ -10,6 +10,7 @@
 [![React](https://img.shields.io/badge/React-18-61DAFB.svg)](https://react.dev)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED.svg)](https://docker.com)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![Tests](https://img.shields.io/badge/tests-24%20passed-brightgreen.svg)](#)
 
 NutriLens is a Chrome extension that sits on Amazon India product pages and tells you whether the marketing claims on a supplement actually match the nutrition label — and how good value for money the product really is.
 

@@ -73,7 +73,13 @@ jobs:
           APP_ENV: test
         run: |
           if [ -d tests ]; then
-            python -m pytest tests/ -v --tb=short
+            python -m pytest tests/ -v --tb=short | tee test_output.txt
+            PASSING=$(grep -oP '\d+(?= passed)' test_output.txt || echo "0")
+            echo "### Test Results :test_tube:" >> $GITHUB_STEP_SUMMARY
+            echo "**Total Tests Passed:** $PASSING" >> $GITHUB_STEP_SUMMARY
+            echo '```text' >> $GITHUB_STEP_SUMMARY
+            tail -n 6 test_output.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
           else
             echo "No tests directory yet — skipping"
           fi
